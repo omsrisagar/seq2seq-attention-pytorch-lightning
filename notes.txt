@@ -1,0 +1,8 @@
+dm = datamodule
+lm = lightingmodule
+
+Order:
+dm.prepare_data
+dm.setup
+
+lm.configure_optimizers

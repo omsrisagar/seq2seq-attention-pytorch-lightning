@@ -49,7 +49,8 @@ from torchnlp.utils import collate_tensors
 
 
 import pytorch_lightning as pl
-import pytorch_lightning.metrics.functional as plfunc
+# import pytorch_lightning.metrics.functional as plfunc
+import torchmetrics.functional as plfunc
 from pytorch_lightning.loggers import TensorBoardLogger
 
 SEED = 42

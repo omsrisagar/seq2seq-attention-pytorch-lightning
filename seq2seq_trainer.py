@@ -2,6 +2,7 @@ import os
 import sys
 from argparse import ArgumentParser
 import random
+import pprint as pp
 
 
 
@@ -21,7 +22,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 import pytorch_lightning as pl
-import pytorch_lightning.metrics.functional as plfunc
+import torchmetrics.functional as plfunc
 from pytorch_lightning.loggers import TensorBoardLogger
 
 
@@ -153,7 +154,7 @@ class Seq2SeqCorrector(pl.LightningModule):
         input = trg[0, :]
 
         # starting with input=<sos> (trg[0]) token and try to predict next token trg[1] so loop starts from 1 range(1, trg_len)
-        for t in range(1, trg_len):
+        for t in range(1, trg_len): # Here we know src_len=trg_len, that's why we are runnig till trg_len, otherwise, we need to run max_seq_len
 
             # insert input token embedding, previous hidden state, all encoder hidden states
             #  and mask
@@ -248,7 +249,7 @@ class Seq2SeqCorrector(pl.LightningModule):
         # do not know if this is a problem, loss will be computed with sos token
 
         # without sos token at the beginning and eos token at the end
-        output = output[1:].view(-1, self.output_dim)
+        output = output[1:].view(-1, self.output_dim) # check notes for validation step here
 
         # trg = trg_seq[1:].view(-1)
         trg = trg_seq[1:].reshape(-1)
@@ -289,11 +290,11 @@ class Seq2SeqCorrector(pl.LightningModule):
         outputs = self.forward(src_seq, src_lengths, trg_seq, 0)
 
         # # without sos token at the beginning and eos token at the end
-        logits = outputs[1:].view(-1, self.output_dim)
+        logits = outputs[1:].view(-1, self.output_dim) # not removing the eos token! change to [1:-1]
 
         # trg = trg_seq[1:].view(-1)
 
-        trg = trg_seq[1:].reshape(-1)
+        trg = trg_seq[1:].reshape(-1) # same as above
 
         # trg = [(trg len - 1) * batch size]
         # output = [(trg len - 1) * batch size, output dim]
@@ -403,14 +404,15 @@ if __name__ == "__main__":
     #     num_workers=args.num_workers,
     # )
 
-    dm.prepare_data()
+    # dm.prepare_data()
     dm.setup("fit")
 
     # to see results run in console
     # tensorboard --logdir tb_logs/
     # then open browser http://localhost:6006/
 
-    log_desc = f"RNN with attention model vocab_size={dm.vocab_size} data_size={dm.dims}, emb_dim={args.emb_dim} hidden_dim={args.hidden_dim}"
+    # log_desc = f"RNN with attention model vocab_size={dm.vocab_size} data_size={dm.dims}, emb_dim={args.emb_dim} hidden_dim={args.hidden_dim}"
+    log_desc = f"RNN with attention model vocab_size={dm.vocab_size} emb_dim={args.emb_dim} hidden_dim={args.hidden_dim}"
     print(log_desc)
 
     logger = TensorBoardLogger(
@@ -426,12 +428,14 @@ if __name__ == "__main__":
     )  # , distributed_backend='ddp_cpu')
 
     model_args = vars(args)
+    pp.PrettyPrinter().pprint(model_args)
     model = Seq2SeqCorrector(
         vocab_size=dm.vocab_size, padding_index=dm.padding_index, **model_args
     )
 
+    # dm.setup('fit')
     # most basic trainer, uses good defaults (1 gpu)
-    trainer.fit(model, dm)
+    trainer.fit(model, datamodule=dm)
 
 # sample cmd
 
