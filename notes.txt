@@ -2,7 +2,89 @@ dm = datamodule
 lm = lightingmodule
 
 Order:
-dm.prepare_data
-dm.setup
+dm.prepare_data (may not be called by pl, you need to call it)
+dm.setup (ditto)
 
 lm.configure_optimizers
+
+
+dm.val_dataloader
+	dataset._getitem_
+dm.train_dataloader
+dm._collate_fn_	
+
+dm.validation_step x2 
+
+dm.train_dataloader x num_train_batches (len(train_dataloader/batch_size))
+	--> interspersed with dm.validation_step x num_val_batches as per validation_interval (something like that)
+-->final dm.validation_step x num_val_batches
+
+
+Check this:
+if sos token needs to be prepended in the input
+teacher_force=0.5 by default, see if you need to modify
+plfunc.accuracy crudely matches labels and preds even for masked 0 indices in the target. ideally it should stop after EOS token in prediction.
+
+ar-evaluation-data_050505_100
+{'test_loss': 0.017594654113054276,
+ 'test_recall_acc': 0.9939999580383301,
+ 'test_sequence_acc': 0.9968095421791077}
+
+ar-evaluation-data_052520_100
+{'test_loss': 0.054294612258672714,
+ 'test_recall_acc': 0.9867023825645447,
+ 'test_sequence_acc': 0.9885714054107666}
+
+
+ar-evaluation-data_053520_100
+{'test_loss': 0.19105477631092072,
+ 'test_recall_acc': 0.966107189655304,
+ 'test_sequence_acc': 0.9627499580383301}
+
+
+ar-evaluation-data_151515_100
+{'test_loss': 0.11741143465042114,
+ 'test_recall_acc': 0.9530119299888611,
+ 'test_sequence_acc': 0.9689047932624817}
+
+
+ar-evaluation-data_250501_100
+{'test_loss': 0.1636727750301361,
+ 'test_recall_acc': 0.8840832710266113,
+ 'test_sequence_acc': 0.9400476217269897}
+
+
+ar-evaluation-data_252505_005 (70 data points only)
+{'test_loss': 1.1059547662734985,
+ 'test_recall_acc': 0.5511904358863831,
+ 'test_sequence_acc': 0.7333332896232605}
+
+ar-evaluation-data_252505_100
+{'test_loss': 0.2562347948551178,
+ 'test_recall_acc': 0.8543333411216736,
+ 'test_sequence_acc': 0.9143333435058594}
+150 epoch results:
+{'test_loss': 0.21811172366142273,
+ 'test_recall_acc': 0.8596310019493103,
+ 'test_sequence_acc': 0.9248571991920471}
+
+ar-evaluation-data_252525_100
+{'test_loss': 0.12401743978261948,
+ 'test_recall_acc': 0.955833375453949,
+ 'test_sequence_acc': 0.9745476245880127}
+
+
+ar-evaluation-data_350501_100
+{'test_loss': 0.07321718335151672,
+ 'test_recall_acc': 0.9618929028511047,
+ 'test_sequence_acc': 0.9825713038444519}
+
+ar-evaluation-data_353535_100
+{'test_loss': 0.22618918120861053,
+ 'test_recall_acc': 0.9062023758888245,
+ 'test_sequence_acc': 0.9341905117034912}
+
+
+
+
+
