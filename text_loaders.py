@@ -40,7 +40,7 @@ class Vocab:
         self.word2count = {}
         self.index2word = {0: "pad_indx", 1: "unk", 2: "EOS", 3: "SOS"}
         self.n_words = 4  # Count above
-        self.max_seq_len = 0 # count max. seq. length; need to add 2 to this!
+        self.max_seq_len = 0 # count max. seq. length; need to add 4 to this!
 
     def filter_word(self, word):
         "Removes HISTORY in the beginning if exists"
