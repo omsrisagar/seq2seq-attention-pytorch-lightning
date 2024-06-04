@@ -75,12 +75,12 @@ class SequenceDataset(Dataset):
             assert pair[0][-1].data == 2 # end index needs to be EOS
             assert pair[1][0].data == 3 # same
             assert pair[1][-1].data == 2 # same
-            # there should be no 0s
+            # there should be no 0s --> 0s are used only for padding
             pair0_indices = torch.nonzero(pair[0] == 0)
             assert len(pair0_indices) == 0
             pair1_indices = torch.nonzero(pair[1] == 0)
             assert len(pair1_indices) == 0
-            # there should be no 1s
+            # there should be no 1s ; 1s are for unknown tokens; in our case we use all the tokens in the dataset
             pair0_indices = torch.nonzero(pair[0] == 1)
             assert len(pair0_indices) == 0
             pair1_indices = torch.nonzero(pair[1] == 1)

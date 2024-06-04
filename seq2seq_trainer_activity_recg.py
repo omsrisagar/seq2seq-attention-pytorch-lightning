@@ -164,7 +164,7 @@ class Seq2SeqTrainer(pl.LightningModule):
         # starting with input=<sos> (trg[0]) token and try to predict next token trg[1] so loop starts from 1 range(1, trg_len)
         for t in range(1, trg_len): # Here we know src_len=trg_len, that's why we are runnig till trg_len, otherwise, we need to run max_seq_len
 
-            # insert input token embedding, previous hidden state, all encoder hidden states
+            # insert input token (will be embedded internally), previous hidden state, all encoder hidden states
             #  and mask
             # receive output tensor (predictions) and new hidden state
             output, hidden, _ = self.decoder(input, hidden, encoder_outputs, mask)
@@ -256,23 +256,27 @@ class Seq2SeqTrainer(pl.LightningModule):
 
         # do not know if this is a problem, loss will be computed with sos token
 
-        # without sos token at the beginning and eos token at the end
+        # without zeros at the beginning i.e.,indx=0 (note that output is initially all zeros and updated only index=1 onwards)
         logits = outputs[1:].transpose(0, 1)
         pred_probs = F.softmax(logits, dim=2)
 
+        # without sos at the beginning (as this is the ground truth seq. we append sos ourselves in the beginning)
         trg = trg_seq[1:].transpose(0, 1)
 
-        # # Now sort trg and output by trg_len before feeding to pla function
-        # trg_sorted, pred_sorted, trg_lengths_sorted = self.sort_labels(logits, trg, trg_lengths)
-        #
-        # # Now reorder targets for position loss alignment (PLA)
-        # trg_sorted = self.order_the_targets_pla(pred_sorted, trg_sorted, trg_lengths_sorted)
-        #
-        # # accumulate across batch
-        # # trg = [(trg len - 1) * batch size]
-        # # logits = [(trg len - 1) * batch size, output dim]
-        # logits = pred_sorted.view(-1, self.output_dim) # check notes for validation step here
-        # trg = trg_sorted.reshape(-1)
+        # Now sort trg and output by trg_len before feeding to pla function
+        trg_sorted, pred_sorted, trg_lengths_sorted = self.sort_labels(logits, trg, trg_lengths)
+
+        # Now reorder targets for position loss alignment (PLA)
+        trg_sorted = self.order_the_targets_pla(pred_sorted, trg_sorted, trg_lengths_sorted)
+
+        # use eos_mask for loss calculation as well (ensure EOS token is also put to zero)
+        # use the returned ground truth labels and logits for accuracy calculation
+
+        # accumulate across batch
+        # trg = [(trg len - 1) * batch size]
+        # logits = [(trg len - 1) * batch size, output dim]
+        logits = pred_sorted.view(-1, self.output_dim) # check notes for validation step here
+        trg = trg_sorted.reshape(-1)
 
         logits = logits.reshape(-1, self.output_dim)
         trg = trg.reshape(-1)
@@ -508,14 +512,16 @@ class Seq2SeqTrainer(pl.LightningModule):
         indexes = np.argmax(scores, axis=2)
         changed_batch_indexes = []
         for i in range(N):
-            common_indexes = set(targets[i][0:label_lengths_sorted[i] - 1]).intersection(set(indexes[i]))
-            diff_indexes = set(targets[i][0:label_lengths_sorted[i] - 1]).difference(set(indexes[i]))
+            len_wo_eos = label_lengths_sorted[i] - 1 # originally considered by authors without including EOS
+            # len_with_eos = label_lengths_sorted[i]
+            common_indexes = set(targets[i][0:len_wo_eos]).intersection(set(indexes[i]))
+            diff_indexes = set(targets[i][0:len_wo_eos]).difference(set(indexes[i]))
             diff_indexes_list = list(diff_indexes)
             common_indexes_copy = common_indexes.copy()
             index_array = np.zeros((len(diff_indexes), len(diff_indexes)))
             if common_indexes != set():
                 changed_batch_indexes.append(i)
-                for j in range(label_lengths_sorted[i] - 1):
+                for j in range(len_wo_eos): # again without considering the last predicted value
                     if indexes[i][j] in common_indexes:
                         if indexes[i][j] != targets_new[i][j].item():
                             old_value = targets_new[i][j]
@@ -531,7 +537,7 @@ class Seq2SeqTrainer(pl.LightningModule):
             if n_different > 1:
                 diff_indexes_tuples = [[count, elem]
                                        for count, elem in enumerate(
-                        targets_new[i][0:label_lengths_sorted[i] - 1])
+                        targets_new[i][0:len_wo_eos]) # even here we are considering ground truth without eos
                                        if elem in diff_indexes]
                 diff_indexes_locations, diff_indexes_ordered = zip(
                     *diff_indexes_tuples)
@@ -543,9 +549,9 @@ class Seq2SeqTrainer(pl.LightningModule):
                         scores_tensor[i][diff_index_location], dim=0)
                     temp = losses[torch.LongTensor(diff_indexes_ordered)]
                     cost_matrix[diff_count, :] = temp.data.cpu().numpy()
-                indexes2 = m.compute(cost_matrix)
-                new_labels = [x[1] for x in indexes2]
-                for new_label_count, new_label in enumerate(new_labels):
+                cost_matrix_orig = cost_matrix.copy()
+                indexes2 = m.compute(cost_matrix) # modified cost_matrix also! even though docstring says otherwise
+                for new_label_count, new_label in indexes2:
                     targets_newest[i][diff_indexes_locations[new_label_count]] = diff_indexes_ordered[new_label]
 
         targets_newest = torch.LongTensor(targets_newest).to(device)
