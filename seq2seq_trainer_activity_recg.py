@@ -258,56 +258,39 @@ class Seq2SeqTrainer(pl.LightningModule):
 
         # without zeros at the beginning i.e.,indx=0 (note that output is initially all zeros and updated only index=1 onwards)
         logits = outputs[1:].transpose(0, 1)
-        pred_probs = F.softmax(logits, dim=2)
 
         # without sos at the beginning (as this is the ground truth seq. we append sos ourselves in the beginning)
         trg = trg_seq[1:].transpose(0, 1)
 
         # Now sort trg and output by trg_len before feeding to pla function
-        trg_sorted, pred_sorted, trg_lengths_sorted = self.sort_labels(logits, trg, trg_lengths)
+        trg_sorted, logits_sorted, trg_lengths_sorted = self.sort_labels(logits, trg, trg_lengths)
+        pred_sorted = logits_sorted.argmax(dim=2)
+        pred_probs_sorted = F.softmax(logits_sorted, dim=2)
 
         # Now reorder targets for position loss alignment (PLA)
-        trg_sorted = self.order_the_targets_pla(pred_sorted, trg_sorted, trg_lengths_sorted)
+        trg_sorted = self.order_the_targets_pla(logits_sorted, trg_sorted, trg_lengths_sorted)
 
-        # use eos_mask for loss calculation as well (ensure EOS token is also put to zero)
         # use the returned ground truth labels and logits for accuracy calculation
 
         # accumulate across batch
         # trg = [(trg len - 1) * batch size]
         # logits = [(trg len - 1) * batch size, output dim]
-        logits = pred_sorted.view(-1, self.output_dim) # check notes for validation step here
+        # Make EOS tokens also to zero for loss calculation & also accuracy as below
+        trg_eos_mask = self.create_eos_mask(trg_sorted)
+        trg_sorted *= trg_eos_mask
+        pred_sorted *= trg_eos_mask
+
+        logits = logits_sorted.view(-1, self.output_dim) # check notes for validation step here
         trg = trg_sorted.reshape(-1)
 
-        logits = logits.reshape(-1, self.output_dim)
-        trg = trg.reshape(-1)
-
-        loss = self.loss(logits, trg)
-
-        # take without first sos token, and reduce by 2 dimension, take index of max logits (make prediction)
-        # seq_len * batch size * vocab_size -> seq_len * batch_size
-
-        pred_seq = outputs[1:].argmax(2)
-
-        # change layout: seq_len * batch_size -> batch_size * seq_len
-        pred_seq = pred_seq.T
-
-        # change layout: seq_len * batch_size -> batch_size * seq_len
-        trg_batch = trg_seq[1:].T
-
-        # Compute mask to ensure entries after EOS token are not included in accuracy calc.
-        # mask = trg_batch != 0
-        # pred_seq = pred_seq * mask
-        pred_eos_mask = self.create_eos_mask(pred_seq)
-        pred_seq = pred_seq * pred_eos_mask
-
-        trg_eos_mask = self.create_eos_mask(trg_batch)
-        trg_batch = trg_batch * trg_eos_mask
+        # Calculate cross entropy loss ignoring 0 trg indices
+        loss = self.loss(logits, trg) # all '0' trg indices are ignored for loss calculation internally
 
         # sequence accuracy: compare list of predicted ids for all sequences in a batch to targets
-        acc = plfunc.accuracy(pred_seq.reshape(-1), trg_batch.reshape(-1))
+        acc = plfunc.accuracy(pred_sorted.reshape(-1), trg) # replace with Accuracy class that has ignore_index
 
         # compute precision, recall accuracy and write to file if needed
-        precision, recall = self.calc_accu(pred_seq, trg_batch, pred_probs.detach(), False)
+        precision, recall = self.calc_accu(pred_sorted, trg_sorted, pred_probs_sorted.detach(), False)
 
         # need to cast to list of predicted sequences (as list of token ids)   [ [seq1_tok1, seq1_tok2, ...seq1_tokN],..., [seqK_tok1, seqK_tok2, ...seqK_tokZ]]
         # predicted_ids = pred_seq.tolist()
