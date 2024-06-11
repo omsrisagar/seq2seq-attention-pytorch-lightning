@@ -1,3 +1,4 @@
+import argparse
 import os
 import sys
 from argparse import ArgumentParser
@@ -5,6 +6,8 @@ import random
 import pprint as pp
 import numpy as np
 from csv import writer
+import logging
+from contextlib import redirect_stdout
 
 # # python.dataScience.notebookFileRoot=${fileDirname}
 # wdir = os.path.abspath(os.getcwd() + "/../../")
@@ -23,8 +26,9 @@ import torch.optim as optim
 import torch.nn.functional as F
 
 import pytorch_lightning as pl
-import torchmetrics.functional as plfunc
+from torchmetrics.classification.accuracy import Accuracy
 from pytorch_lightning.loggers import TensorBoardLogger
+from pytorch_lightning.loggers import CSVLogger
 
 from text_loaders import PAD_token, UNK_token, SOS_token, EOS_token
 from munkres import Munkres
@@ -55,6 +59,9 @@ class Seq2SeqTrainer(pl.LightningModule):
         dropout=0.1,
         teacher_forcing_ratio=0.5,
         output_file="",
+        exclude_eos=False, # for loss and seq_accuracy calculation
+        use_pred_eos=True, # if True, tokens till EOS is predicted are taken as output, else till ground truth EOS
+        use_pla=True, # whether to include orderless PLA for reordering targets; if False default order of tgts is used
         **kwargs,
     ) -> None:
         super().__init__()
@@ -73,6 +80,9 @@ class Seq2SeqTrainer(pl.LightningModule):
         self.dec_dropout = dropout  # DEC_DROPOUT
 
         self.teacher_forcing_ratio = teacher_forcing_ratio # used during training
+        self.exclude_eos = exclude_eos
+        self.use_pred_eos = use_pred_eos
+        self.use_pla = use_pla
 
         self.pad_idx = padding_index
 
@@ -214,7 +224,8 @@ class Seq2SeqTrainer(pl.LightningModule):
             "scheduler": optim.lr_scheduler.OneCycleLR(
                 optimizer,
                 max_lr=self.learning_rate,
-                steps_per_epoch=int(len(self.train_dataloader())),
+                # steps_per_epoch=int(len(self.train_dataloader())),
+                steps_per_epoch=int(len(self.trainer._data_connector._train_dataloader_source.dataloader())),
                 epochs=self.max_epochs,
                 anneal_strategy="linear",
                 final_div_factor=1000,
@@ -226,8 +237,10 @@ class Seq2SeqTrainer(pl.LightningModule):
         }
 
         return [optimizer], [lr_scheduler]
-
-    def training_step(self, batch, batch_idx):
+    def calc_loss_and_metrics(self, batch, mode='train'):
+        """
+        Calculates loss, sequential accuracy, precision, recall
+        """
         src_batch, trg_batch = batch
 
         src_seq = src_batch["src_ids"]
@@ -252,7 +265,7 @@ class Seq2SeqTrainer(pl.LightningModule):
 
         # output = self.forward(self.input_src, self.input_src_len, self.input_trg)
         # old version of forward, with tensors from dataloader
-        outputs = self.forward(src_seq, src_lengths, trg_seq, teacher_forcing_ratio=self.teacher_forcing_ratio)
+        outputs = self.forward(src_seq, src_lengths, trg_seq, teacher_forcing_ratio=self.teacher_forcing_ratio if mode == 'train' else 0)
 
         # do not know if this is a problem, loss will be computed with sos token
 
@@ -267,18 +280,23 @@ class Seq2SeqTrainer(pl.LightningModule):
         pred_sorted = logits_sorted.argmax(dim=2)
         pred_probs_sorted = F.softmax(logits_sorted, dim=2)
 
-        # Now reorder targets for position loss alignment (PLA)
-        trg_sorted = self.order_the_targets_pla(logits_sorted, trg_sorted, trg_lengths_sorted)
-
-        # use the returned ground truth labels and logits for accuracy calculation
+        if self.use_pla:
+            # Now reorder targets for position loss alignment (PLA)
+            trg_sorted = self.order_the_targets_pla(logits_sorted, trg_sorted, trg_lengths_sorted)
 
         # accumulate across batch
         # trg = [(trg len - 1) * batch size]
         # logits = [(trg len - 1) * batch size, output dim]
-        # Make EOS tokens also to zero for loss calculation & also accuracy as below
-        trg_eos_mask = self.create_eos_mask(trg_sorted)
-        trg_sorted *= trg_eos_mask
-        pred_sorted *= trg_eos_mask
+
+        if self.exclude_eos:
+            # Make EOS tokens also to zero for loss calculation & also accuracy as below
+            trg_from_eos_mask, trg_len_till_eos = self.create_eos_mask(trg_sorted, from_eos=True)
+            trg_sorted *= trg_from_eos_mask
+        else:
+            # Get mask for tokens after EOS token
+            trg_after_eos_mask, trg_len_till_eos = self.create_eos_mask(trg_sorted, from_eos=False)
+
+        trg_len_to_use = trg_len_till_eos if self.exclude_eos else trg_len_till_eos + 1
 
         logits = logits_sorted.view(-1, self.output_dim) # check notes for validation step here
         trg = trg_sorted.reshape(-1)
@@ -287,190 +305,26 @@ class Seq2SeqTrainer(pl.LightningModule):
         loss = self.loss(logits, trg) # all '0' trg indices are ignored for loss calculation internally
 
         # sequence accuracy: compare list of predicted ids for all sequences in a batch to targets
-        acc = plfunc.accuracy(pred_sorted.reshape(-1), trg) # replace with Accuracy class that has ignore_index
+        device = pred_sorted.device
+        accuracy = Accuracy(task="multiclass", num_classes=self.output_dim, ignore_index=self.pad_idx).to(device)
+        acc = accuracy(pred_sorted.reshape(-1), trg)
+
+        if self.use_pred_eos:
+            # Make EOS tokens also to zero for loss calculation & also accuracy as below
+            pred_eos_mask, pred_len_till_eos = self.create_eos_mask(pred_sorted, from_eos=self.exclude_eos)
+            pred_sorted *= pred_eos_mask
+            pred_len_to_use = pred_len_till_eos if self.exclude_eos else pred_len_till_eos + 1
+        else:
+            mask_to_use = trg_from_eos_mask if self.exclude_eos else trg_after_eos_mask
+            pred_sorted *= mask_to_use
+            pred_len_to_use = trg_len_to_use
 
         # compute precision, recall accuracy and write to file if needed
-        precision, recall = self.calc_accu(pred_sorted, trg_sorted, pred_probs_sorted.detach(), False)
-
-        # need to cast to list of predicted sequences (as list of token ids)   [ [seq1_tok1, seq1_tok2, ...seq1_tokN],..., [seqK_tok1, seqK_tok2, ...seqK_tokZ]]
-        # predicted_ids = pred_seq.tolist()
-
-        # need to add additional dim to each target reference sequence in order to
-        # convert to format needed by bleu_score function [ seq1=[ [reference1], [reference2] ], seq2=[ [reference1] ] ]
-        # target_ids = torch.unsqueeze(trg_batch, 1).tolist()
-
-        # bleu score needs two arguments
-        # first: predicted_ids - list of predicted sequences as a list of predicted ids
-        # second: target_ids - list of references (can be many, list)
-        # bleu_score = plfunc.nlp.bleu_score(predicted_ids, target_ids, n_gram=3)
-        # torch.unsqueeze(trg_batchT,1).tolist())
-
-        self.log(
-            "train_loss",
-            loss.item(),
-            on_step=True,
-            on_epoch=True,
-            prog_bar=True,
-            logger=True,
-        )
-
-        self.log(
-            "train_sequence_acc",
-            acc,
-            on_step=True,
-            on_epoch=True,
-            prog_bar=True,
-            logger=True,
-            sync_dist=True,
-        )
-        self.log(
-            "train_precision_acc",
-            precision,
-            on_step=True,
-            on_epoch=True,
-            prog_bar=True,
-            logger=True,
-            sync_dist=True,
-        )
-        self.log(
-            "train_recall_acc",
-            recall,
-            on_step=True,
-            on_epoch=True,
-            prog_bar=True,
-            logger=True,
-            sync_dist=True,
-        )
-        # self.log(
-        #     "val_bleu_idx",
-        #     bleu_score,
-        #     on_step=False,
-        #     on_epoch=True,
-        #     prog_bar=True,
-        #     logger=True,
-        #     sync_dist=True,
-        # )
-
-        # return loss
-        return {'loss': loss, 'acc': acc, 'precision': precision, 'recall': recall}
-
-    def validation_step(self, batch, batch_idx):
-        """validation is in eval mode so we do not have to use
-        placeholder input tensors
-        """
-
-        src_batch, trg_batch = batch
-
-        src_seq = src_batch["src_ids"]
-        # change from [batch, seq_len] -> to [seq_len, batch]
-        src_seq = src_seq.transpose(0, 1)
-        src_lengths = src_batch["src_lengths"]
-
-        trg_seq = trg_batch["trg_ids"]
-        # change from [batch, seq_len] -> to [seq_len, batch]
-        trg_seq = trg_seq.transpose(0, 1)
-        trg_lengths = trg_batch["trg_lengths"]
-
-        outputs = self.forward(src_seq, src_lengths, trg_seq, 0)
-
-        # # without sos token at the beginning and eos token at the end
-        logits = outputs[1:].view(-1, self.output_dim) # not removing the eos token because we want to verify that as well!
-
-        # trg = trg_seq[1:].view(-1)
-
-        trg = trg_seq[1:].reshape(-1) # same as above
-
-        # trg = [(trg len - 1) * batch size]
-        # output = [(trg len - 1) * batch size, output dim]
-
-        loss = self.loss(logits, trg)
-
-        # take without first sos token, and reduce by 2 dimension, take index of max logits (make prediction)
-        # seq_len * batch size * vocab_size -> seq_len * batch_size
-
-        pred_seq = outputs[1:].argmax(2)
-        pred_probs = outputs[1:].transpose(0, 1)
-        pred_probs = F.softmax(pred_probs, dim=2)
-
-        # change layout: seq_len * batch_size -> batch_size * seq_len
-        pred_seq = pred_seq.T
-
-        # change layout: seq_len * batch_size -> batch_size * seq_len
-        trg_batch = trg_seq[1:].T
-
-        # Compute mask to ensure entries after EOS token are not included in accuracy calc.
-        # mask = trg_batch != 0 # best thing would be to search for (first occurrence of) EOS token in pred_seq and then take the mask of it rather than trg_batch
-        # pred_seq = pred_seq * mask
-        pred_eos_mask = self.create_eos_mask(pred_seq)
-        pred_seq = pred_seq * pred_eos_mask
-        
-        trg_eos_mask = self.create_eos_mask(trg_batch)
-        trg_batch = trg_batch * trg_eos_mask
-
-        # sequence accuracy: compare list of predicted ids for all sequences in a batch to targets
-        acc = plfunc.accuracy(pred_seq.reshape(-1), trg_batch.reshape(-1))
-
-        # compute precision, recall accuracy and write to file if needed
-        precision, recall = self.calc_accu(pred_seq, trg_batch, pred_probs, False)
-
-        # need to cast to list of predicted sequences (as list of token ids)   [ [seq1_tok1, seq1_tok2, ...seq1_tokN],..., [seqK_tok1, seqK_tok2, ...seqK_tokZ]]
-        # predicted_ids = pred_seq.tolist()
-
-        # need to add additional dim to each target reference sequence in order to
-        # convert to format needed by bleu_score function [ seq1=[ [reference1], [reference2] ], seq2=[ [reference1] ] ]
-        # target_ids = torch.unsqueeze(trg_batch, 1).tolist()
-
-        # bleu score needs two arguments
-        # first: predicted_ids - list of predicted sequences as a list of predicted ids
-        # second: target_ids - list of references (can be many, list)
-        # bleu_score = plfunc.nlp.bleu_score(predicted_ids, target_ids, n_gram=3)
-        # torch.unsqueeze(trg_batchT,1).tolist())
-
-        self.log(
-            "val_loss",
-            loss.item(),
-            on_step=False,
-            on_epoch=True,
-            prog_bar=True,
-            logger=True,
-            sync_dist=True,
-        )
-        self.log(
-            "val_sequence_acc",
-            acc,
-            on_step=False,
-            on_epoch=True,
-            prog_bar=True,
-            logger=True,
-            sync_dist=True,
-        )
-        self.log(
-            "val_precision_acc",
-            precision,
-            on_step=False,
-            on_epoch=True,
-            prog_bar=True,
-            logger=True,
-            sync_dist=True,
-        )
-        self.log(
-            "val_recall_acc",
-            recall,
-            on_step=False,
-            on_epoch=True,
-            prog_bar=True,
-            logger=True,
-            sync_dist=True,
-        )
-        # self.log(
-        #     "val_bleu_idx",
-        #     bleu_score,
-        #     on_step=False,
-        #     on_epoch=True,
-        #     prog_bar=True,
-        #     logger=True,
-        #     sync_dist=True,
-        # )
+        precision, recall = self.calc_accu(pred_sorted,
+                                        trg_sorted,
+                                        pred_len_to_use,
+                                        trg_len_to_use,
+                                        pred_probs_sorted.detach())
 
         return loss, acc, precision, recall
 
@@ -548,7 +402,7 @@ class Seq2SeqTrainer(pl.LightningModule):
         mask = ~mask.type(torch.bool)
         return mask
 
-    def create_eos_mask(self, pred: torch.Tensor) -> torch.Tensor:
+    def create_eos_mask(self, pred: torch.Tensor, from_eos: bool = True) -> torch.Tensor:
         """
         Takes prediction tensor BxT and returns BxT mask where elements from EOS token are marked False
         """
@@ -558,42 +412,47 @@ class Seq2SeqTrainer(pl.LightningModule):
         eos_indices[eos_indices == 0] = pred.shape[1]-1 # if EOS token is not detected, then put max seq len
         # mask[eos_indices:] = 0 # not working
         for batch_indx in range(len(pred)):
-            mask[batch_indx, eos_indices[batch_indx]:] = 0
-        return mask
+            if from_eos:
+                mask[batch_indx, eos_indices[batch_indx]:] = 0 # indices from EOS are made 0
+            else:
+                mask[batch_indx, eos_indices[batch_indx] + 1:] = 0 # indices after EOS are made 0
+        return mask, eos_indices
 
-    def calc_accu(self, pred: torch.Tensor, tgt: torch.Tensor, pred_probs: torch.Tensor, write_to_file: bool) -> tuple[float, float]:
+    def calc_accu(self,
+                  pred: torch.Tensor,
+                  tgt: torch.Tensor,
+                  pred_len: torch.Tensor,
+                  trg_len: torch.Tensor,
+                  pred_probs: torch.Tensor) -> tuple[float, float]:
         """
         Accuracy in terms of precision - percentage of correct (those in tgt) items predicted
         Accuracy in terms of recall - percentage of items predicted that are in tgt
         pred_probs: B x T x output_dim
         write_to_file: write pred_prob, ground_truth to csv for each predicted/mispredicted (supposed to predict, but didnt)element
         """
-        rem_elem = [0] # remove zeros as we don't want them in accuracy calculation
-        pred_mask = self.filter(pred, rem_elem)
-        tgt_mask = self.filter(tgt, rem_elem)
         precision_accuracy = []
         recall_accuracy = []
         preds_TP = []
         preds_FP = []
         preds_FN = []
         for batch_indx in range(len(pred)):
-            pred_filter = pred[batch_indx, :][pred_mask[batch_indx]].cpu().tolist()
-            tgt_filter = tgt[batch_indx, :][tgt_mask[batch_indx]].cpu().tolist()
-            pred_prob_filter = pred_probs[batch_indx, :, :][pred_mask[batch_indx]].cpu().numpy() # e.g., 3x25 array
+            pred_filter = pred[batch_indx, :][:pred_len[batch_indx]].cpu().tolist()
+            tgt_filter = tgt[batch_indx, :][:trg_len[batch_indx]].cpu().tolist()
+            pred_prob_filter = pred_probs[batch_indx, :, :][:pred_len[batch_indx]].cpu().numpy() # e.g., 3x25 array
             TP = set(np.intersect1d(pred_filter, tgt_filter))
             FP = set(np.setdiff1d(pred_filter, tgt_filter))
-            diff_elem = set(np.setxor1d(pred_filter, tgt_filter))
+            diff_elem = set(np.setxor1d(pred_filter, tgt_filter)) # elements only in one of the arrays but not both
             FN = diff_elem - FP
-            if write_to_file:
+            if self.output_file:
                 preds_TP.extend([[pred_prob_filter[pred_filter.index(elem), elem],1] for elem in TP])
                 preds_FP.extend([[pred_prob_filter[pred_filter.index(elem), elem],0] for elem in FP])
                 try:
                     preds_FN.extend([[pred_prob_filter[:, elem].max(),1] for elem in FN]) # max. prob. of this element across predicted timesteps
                 except IndexError:
-                    print("index error!")
+                    logging.info("index error!")
             precision_accuracy.append(len(TP) / len(pred_filter))
             recall_accuracy.append(len(TP)/len(tgt_filter))
-        if write_to_file and self.output_file:
+        if self.output_file:
             with open(self.output_file, 'a') as f_object:
                 write_obj = writer(f_object)
                 write_obj.writerows(preds_TP)
@@ -602,65 +461,144 @@ class Seq2SeqTrainer(pl.LightningModule):
                 f_object.close()
         return np.mean(precision_accuracy), np.mean(recall_accuracy) # precision, recall
 
+    def training_step(self, batch, batch_idx):
+
+        loss, acc, precision, recall = self.calc_loss_and_metrics(batch)
+
+        # need to cast to list of predicted sequences (as list of token ids)   [ [seq1_tok1, seq1_tok2, ...seq1_tokN],..., [seqK_tok1, seqK_tok2, ...seqK_tokZ]]
+        # predicted_ids = pred_seq.tolist()
+
+        # need to add additional dim to each target reference sequence in order to
+        # convert to format needed by bleu_score function [ seq1=[ [reference1], [reference2] ], seq2=[ [reference1] ] ]
+        # target_ids = torch.unsqueeze(trg_batch, 1).tolist()
+
+        # bleu score needs two arguments
+        # first: predicted_ids - list of predicted sequences as a list of predicted ids
+        # second: target_ids - list of references (can be many, list)
+        # bleu_score = plfunc.nlp.bleu_score(predicted_ids, target_ids, n_gram=3)
+        # torch.unsqueeze(trg_batchT,1).tolist())
+
+        self.log(
+            "train_loss",
+            loss.item(),
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+        )
+
+        self.log(
+            "train_sequence_acc",
+            acc,
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+            sync_dist=True,
+        )
+        self.log(
+            "train_precision_acc",
+            precision,
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+            sync_dist=True,
+        )
+        self.log(
+            "train_recall_acc",
+            recall,
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+            sync_dist=True,
+        )
+        # self.log(
+        #     "val_bleu_idx",
+        #     bleu_score,
+        #     on_step=False,
+        #     on_epoch=True,
+        #     prog_bar=True,
+        #     logger=True,
+        #     sync_dist=True,
+        # )
+
+        # return loss
+        return {'loss': loss, 'acc': acc, 'precision': precision, 'recall': recall}
+
+    def validation_step(self, batch, batch_idx):
+        """validation is in eval mode so we do not have to use
+        placeholder input tensors
+        """
+        loss, acc, precision, recall = self.calc_loss_and_metrics(batch, mode='val')
+
+        # need to cast to list of predicted sequences (as list of token ids)   [ [seq1_tok1, seq1_tok2, ...seq1_tokN],..., [seqK_tok1, seqK_tok2, ...seqK_tokZ]]
+        # predicted_ids = pred_seq.tolist()
+
+        # need to add additional dim to each target reference sequence in order to
+        # convert to format needed by bleu_score function [ seq1=[ [reference1], [reference2] ], seq2=[ [reference1] ] ]
+        # target_ids = torch.unsqueeze(trg_batch, 1).tolist()
+
+        # bleu score needs two arguments
+        # first: predicted_ids - list of predicted sequences as a list of predicted ids
+        # second: target_ids - list of references (can be many, list)
+        # bleu_score = plfunc.nlp.bleu_score(predicted_ids, target_ids, n_gram=3)
+        # torch.unsqueeze(trg_batchT,1).tolist())
+
+        self.log(
+            "val_loss",
+            loss.item(),
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+            sync_dist=True,
+        )
+        self.log(
+            "val_sequence_acc",
+            acc,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+            sync_dist=True,
+        )
+        self.log(
+            "val_precision_acc",
+            precision,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+            sync_dist=True,
+        )
+        self.log(
+            "val_recall_acc",
+            recall,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+            sync_dist=True,
+        )
+        # self.log(
+        #     "val_bleu_idx",
+        #     bleu_score,
+        #     on_step=False,
+        #     on_epoch=True,
+        #     prog_bar=True,
+        #     logger=True,
+        #     sync_dist=True,
+        # )
+
+        return loss, acc, precision, recall
 
     def test_step(self, batch, batch_idx):
         """validation is in eval mode so we do not have to use
         placeholder input tensors
         """
-
-        src_batch, trg_batch = batch
-
-        src_seq = src_batch["src_ids"]
-        # change from [batch, seq_len] -> to [seq_len, batch]
-        src_seq = src_seq.transpose(0, 1)
-        src_lengths = src_batch["src_lengths"]
-
-        trg_seq = trg_batch["trg_ids"]
-        # change from [batch, seq_len] -> to [seq_len, batch]
-        trg_seq = trg_seq.transpose(0, 1)
-        trg_lengths = trg_batch["trg_lengths"]
-
-        outputs = self.forward(src_seq, src_lengths, trg_seq, 0)
-
-        # # without sos token at the beginning and eos token at the end
-        logits = outputs[1:].view(-1, self.output_dim) # not removing the eos token! change to [1:-1]
-
-        # trg = trg_seq[1:].view(-1)
-
-        trg = trg_seq[1:].reshape(-1) # same as above
-
-        # trg = [(trg len - 1) * batch size]
-        # output = [(trg len - 1) * batch size, output dim]
-
-        loss = self.loss(logits, trg)
-
-        # take without first sos token, and reduce by 2 dimension, take index of max logits (make prediction)
-        # seq_len * batch size * vocab_size -> seq_len * batch_size
-
-        pred_seq = outputs[1:].argmax(2)
-        pred_probs = outputs[1:].transpose(0, 1)
-        pred_probs = F.softmax(pred_probs, dim=2)
-
-        # change layout: seq_len * batch_size -> batch_size * seq_len
-        pred_seq = pred_seq.T
-
-        # change layout: seq_len * batch_size -> batch_size * seq_len
-        trg_batch = trg_seq[1:].T
-
-        # Compute mask to ensure entries after EOS token are not included in accuracy calc.
-        # mask = trg_batch != 0
-        # pred_seq = pred_seq * mask
-        pred_eos_mask = self.create_eos_mask(pred_seq)
-        pred_seq = pred_seq * pred_eos_mask
-
-        trg_eos_mask = self.create_eos_mask(trg_batch)
-        trg_batch = trg_batch * trg_eos_mask
-
-        # compere list of predicted ids for all sequences in a batch to targets
-        acc = plfunc.accuracy(pred_seq.reshape(-1), trg_batch.reshape(-1))
-
-        # compute precision, recall accuracy and write to file if needed
-        precision, recall = self.calc_accu(pred_seq, trg_batch, pred_probs, True)
+        loss, acc, precision, recall = self.calc_loss_and_metrics(batch, mode='testj')
 
         # need to cast to list of predicted sequences (as list of token ids)   [ [seq1_tok1, seq1_tok2, ...seq1_tokN],..., [seqK_tok1, seqK_tok2, ...seqK_tokZ]]
         # predicted_ids = pred_seq.tolist()
@@ -724,8 +662,6 @@ class Seq2SeqTrainer(pl.LightningModule):
         return loss, acc, precision, recall
 
 
-
-
 if __name__ == "__main__":
 
 
@@ -738,11 +674,14 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--teacher_forcing_ratio", type=float, default=0.5)
+    parser.add_argument("--exclude_eos", type=int, default=0, help="Whether to exclude EOS token for loss and accuracy calculation")
+    parser.add_argument("--use_pred_eos", type=int, default=1, help="Whether to use predicted EOS as the last token")
+    parser.add_argument("--use_pla", type=int, default=1, help="Whether to use PLA for orderless learning")
     parser.add_argument("--train_data_path", type=str, default="./data/ar-training-data_050505_100.txt")
     parser.add_argument("--test_data_path", type=str, default="")
-    parser.add_argument("--output_file", type=str, default="pred_probs.csv")
+    parser.add_argument("--output_file", type=str, default="")
     parser.add_argument("--log_dir", type=str, default="./results")
-    parser.add_argument("--resume_ckpt_path", type=str, default="")
+    parser.add_argument("--resume_checkpoint", type=str, default="")
 
     # add model specific args
     parser = Seq2SeqTrainer.add_model_specific_args(parser)
@@ -752,6 +691,31 @@ if __name__ == "__main__":
     parser = pl.Trainer.add_argparse_args(parser)
 
     args = parser.parse_args()
+
+    # configure logging on module level, redirect to file
+    train_filename = os.path.basename(args.train_data_path)
+    logdir = args.log_dir+'/'+train_filename.split('.')[0]
+    os.makedirs(logdir, exist_ok=True)
+    # Configure logging to save to a file
+    log_file = os.path.join(logdir, "output.log")
+    # logging.basicConfig(filename=log_file, level=logging.INFO)
+    # logger = logging.getLogger("my_logger")
+    # logging.getLogger("trainer.lightning.pytorch").setLevel(logging.DEBUG)
+    # logger = logging.getLogger("trainer.lightning.pytorch")
+    # logger.addHandler(logging.FileHandler(log_file))
+    # logger.addHandler(logging.StreamHandler())
+
+    logging.basicConfig(
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler(log_file, mode="w"),
+        ],
+        level=logging.INFO,
+        # format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        # datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    # log_fh = open(log_file, 'a')
+    logger = logging.getLogger(__name__)
 
     # get eval filename from training one if not provided
     args.test_data_path = args.test_data_path if args.test_data_path else args.train_data_path.replace('training', 'evaluation')
@@ -772,7 +736,8 @@ if __name__ == "__main__":
     #     num_workers=args.num_workers,
     # )
 
-    # dm.prepare_data()
+    # with redirect_stdout(log_fh):
+    #     dm.prepare_data()
     dm.setup("fit")
 
     # to see results run in console
@@ -783,26 +748,25 @@ if __name__ == "__main__":
     input_dim = dm.input_vocab.n_words
     output_dim = dm.output_vocab.n_words
     log_desc = f"RNN with attention model input vocab_size={input_dim} output vocab siz={output_dim} emb_dim={args.emb_dim} hidden_dim={args.hidden_dim}"
-    print(log_desc)
+    logging.info(log_desc)
 
-    train_filename = os.path.basename(args.train_data_path)
-    logdir = args.log_dir+'/'+train_filename.split('.')[0]
-    logger = TensorBoardLogger(logdir, name="pl_tensorboard_logs", comment=log_desc )
+    tb_logger = TensorBoardLogger(logdir, name="pl_tensorboard_logs", comment=log_desc )
+    csv_logger = CSVLogger(logdir, name="csv_logs")
 
     from pytorch_lightning.callbacks import LearningRateMonitor
 
     lr_monitor = LearningRateMonitor(logging_interval="step")
 
     trainer = pl.Trainer.from_argparse_args(
-        args, logger=logger, callbacks=[lr_monitor]
+        args, logger=[csv_logger, tb_logger], callbacks=[lr_monitor]
     )  # , distributed_backend='ddp_cpu')
 
     model_args = vars(args)
-    pp.PrettyPrinter().pprint(model_args)
+    logging.info(pp.PrettyPrinter().pprint(model_args))
     model = Seq2SeqTrainer(input_vocab_size=input_dim, output_vocab_size=output_dim, padding_index=tl.PAD_token, **model_args)
 
-    if args.resume_ckpt_path:
-        model = model.load_from_checkpoint(args.resume_ckpt_path)
+    if args.resume_checkpoint:
+        model = model.load_from_checkpoint(args.resume_checkpoint)
 
     # if an output file is provided in this run, update it in the model object.
     if args.output_file:
@@ -812,7 +776,7 @@ if __name__ == "__main__":
     trainer.fit(model, datamodule=dm)
 
     # Test the performance
-    print("\n-------Performing Testing on Provided Evaluation/Test File---------\n")
+    logging.info("\n-------Performing Testing on Provided Evaluation/Test File---------\n")
     dm.setup('test')
     trainer.test(model, datamodule=dm)
 

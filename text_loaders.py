@@ -2,6 +2,7 @@ import os
 import sys
 import datetime as dt
 import json
+import logging
 
 #import dill # pickle lambda https://stackoverflow.com/a/25353243/75037
 import pickle
@@ -122,14 +123,14 @@ class ActivityRecDataModule(pl.LightningDataModule):
 
 
     def read_file(self, filename):
-        print(f"Reading lines from {filename}...")
+        logging.info(f"Reading lines from {filename}...")
 
         # Read the file and split into lines
         lines = open(filename).read().strip().split('\n')
 
         # Split every line into pairs and normalize
         pairs = [l.split('#') for l in lines]
-        print("Read %s sequence pairs" % len(pairs))
+        logging.info("Read %s sequence pairs" % len(pairs))
         input_vocab = Vocab('activity_recognition_vocab')
         # output_vocab = Vocab('activity_recognition_output')
         output_vocab = input_vocab # since both input and output have activities
@@ -140,13 +141,13 @@ class ActivityRecDataModule(pl.LightningDataModule):
         """generates input and output sequences from file
         """
         input_vocab, output_vocab, pairs = self.read_file(filename)
-        print(f"Counting words from {filename}...")
+        logging.info(f"Counting words from {filename}...")
         for pair in pairs:
             input_vocab.addSequence(pair[0])
             output_vocab.addSequence(pair[1])
-        print("Counted words:")
-        print(input_vocab.name, input_vocab.n_words)
-        print(output_vocab.name, output_vocab.n_words)
+        logging.info("Counted words:")
+        logging.info(f"{input_vocab.name}, {input_vocab.n_words}")
+        logging.info(f"{output_vocab.name}, {output_vocab.n_words}")
         return input_vocab, output_vocab, pairs
 
     def indexes_from_sequence(self, vocab, sequence):
@@ -198,19 +199,19 @@ class ActivityRecDataModule(pl.LightningDataModule):
         # self.test_dataset = self.gen_tensors(val_pairs, self.input_vocab, self.output_vocab)
         if stage == 'fit':
             self.input_vocab, self.output_vocab, train_pairs = self.gen_sequences(self.train_filename) # input and output vocab are same objects
-            print("Example train pair: raw and tensor formats")
-            print(random.choice(train_pairs))
+            logging.info("Example train pair: raw and tensor formats")
+            logging.info(random.choice(train_pairs))
             tensor_train_pairs = self.gen_tensors(train_pairs)
-            print(random.choice(tensor_train_pairs))
+            logging.info(random.choice(tensor_train_pairs))
             train_dataset = SequenceDataset(tensor_train_pairs)
             self.train_data, self.val_data = random_split(train_dataset, [1-self.N_valid_size, self.N_valid_size])
 
         if stage == 'test':
             _, _, test_pairs = self.gen_sequences(self.test_filename)
-            print("Example test pair: raw and tensor formats")
-            print(random.choice(test_pairs))
+            logging.info("Example test pair: raw and tensor formats")
+            logging.info(random.choice(test_pairs))
             tensor_test_pairs = self.gen_tensors(test_pairs)
-            print(random.choice(tensor_test_pairs))
+            logging.info(random.choice(tensor_test_pairs))
             self.test_data = SequenceDataset(tensor_test_pairs)
 
     def __collate_fn(self, sample: list, prepare_target=True):
