@@ -129,7 +129,7 @@ class ActivityRecDataModule(pl.LightningDataModule):
         lines = open(filename).read().strip().split('\n')
 
         # Split every line into pairs and normalize
-        pairs = [l.split('#') for l in lines]
+        pairs = [l.split('#') for l in lines if l]
         logging.info("Read %s sequence pairs" % len(pairs))
         input_vocab = Vocab('activity_recognition_vocab')
         # output_vocab = Vocab('activity_recognition_output')

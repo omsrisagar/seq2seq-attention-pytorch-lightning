@@ -62,6 +62,7 @@ class Seq2SeqTrainer(pl.LightningModule):
         exclude_eos=False, # for loss and seq_accuracy calculation
         use_pred_eos=True, # if True, tokens till EOS is predicted are taken as output, else till ground truth EOS
         use_pla=True, # whether to include orderless PLA for reordering targets; if False default order of tgts is used
+        use_base_model=False,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -83,6 +84,8 @@ class Seq2SeqTrainer(pl.LightningModule):
         self.exclude_eos = exclude_eos
         self.use_pred_eos = use_pred_eos
         self.use_pla = use_pla
+
+        self.use_base_model = use_base_model
 
         self.pad_idx = padding_index
 
@@ -107,7 +110,12 @@ class Seq2SeqTrainer(pl.LightningModule):
         # self.register_buffer("input_src_len", torch.LongTensor(1))
         # self.register_buffer("input_trg", torch.LongTensor(1))
 
-        self._loss = nn.CrossEntropyLoss(ignore_index=self.pad_idx)
+        if self.use_base_model:
+            self.fc1 = nn.Linear(self.enc_hid_dim, self.enc_hid_dim//2)
+            self.fc2 = nn.Linear(self.enc_hid_dim//2, self.output_dim)
+            self._loss = nn.BCEWithLogitsLoss()
+        else:
+            self._loss = nn.CrossEntropyLoss(ignore_index=self.pad_idx)
 
         self.attention = encdec.Attention(self.enc_hid_dim, self.dec_hid_dim)
 
@@ -163,6 +171,9 @@ class Seq2SeqTrainer(pl.LightningModule):
         # encoder_outputs is all hidden states of the input sequence, back and forwards
         # hidden is the final forward and backward hidden states, passed through a linear layer
         encoder_outputs, hidden = self.encoder(src, src_len)
+
+        if self.use_base_model:
+            return self.fc2(self.fc1(hidden))
 
         mask = self.create_mask(src)
         # mask = [batch size, src len]
@@ -266,65 +277,90 @@ class Seq2SeqTrainer(pl.LightningModule):
         # output = self.forward(self.input_src, self.input_src_len, self.input_trg)
         # old version of forward, with tensors from dataloader
         outputs = self.forward(src_seq, src_lengths, trg_seq, teacher_forcing_ratio=self.teacher_forcing_ratio if mode == 'train' else 0)
-
-        # do not know if this is a problem, loss will be computed with sos token
-
-        # without zeros at the beginning i.e.,indx=0 (note that output is initially all zeros and updated only index=1 onwards)
-        logits = outputs[1:].transpose(0, 1)
-
-        # without sos at the beginning (as this is the ground truth seq. we append sos ourselves in the beginning)
-        trg = trg_seq[1:].transpose(0, 1)
-
-        # Now sort trg and output by trg_len before feeding to pla function
-        trg_sorted, logits_sorted, trg_lengths_sorted = self.sort_labels(logits, trg, trg_lengths)
-        pred_sorted = logits_sorted.argmax(dim=2)
-        pred_probs_sorted = F.softmax(logits_sorted, dim=2)
-
-        if self.use_pla:
-            # Now reorder targets for position loss alignment (PLA)
-            trg_sorted = self.order_the_targets_pla(logits_sorted, trg_sorted, trg_lengths_sorted)
-
-        # accumulate across batch
-        # trg = [(trg len - 1) * batch size]
-        # logits = [(trg len - 1) * batch size, output dim]
-
-        if self.exclude_eos:
-            # Make EOS tokens also to zero for loss calculation & also accuracy as below
-            trg_from_eos_mask, trg_len_till_eos = self.create_eos_mask(trg_sorted, from_eos=True)
-            trg_sorted *= trg_from_eos_mask
+        if self.use_base_model: # multi-label
+            without_sos = trg_seq[1:].transpose(0, 1)
+            _, eos_indices = self.create_eos_mask(without_sos, from_eos=True)
+            bs = trg_seq.shape[1]
+            trg_bm = torch.zeros((bs, self.output_dim), device=trg_seq.device)
+            for i in range(bs):
+                trg_bm[i, without_sos[i][:eos_indices[i]]] = 1
+            logits_bm = outputs
+            pred_probs_bm = F.sigmoid(logits_bm)
+            pred_bm = (pred_probs_bm > 0.5).int()
         else:
-            # Get mask for tokens after EOS token
-            trg_after_eos_mask, trg_len_till_eos = self.create_eos_mask(trg_sorted, from_eos=False)
+            # do not know if this is a problem, loss will be computed with sos token
 
-        trg_len_to_use = trg_len_till_eos if self.exclude_eos else trg_len_till_eos + 1
+            # without zeros at the beginning i.e.,indx=0 (note that output is initially all zeros and updated only index=1 onwards)
+            logits = outputs[1:].transpose(0, 1)
 
-        logits = logits_sorted.view(-1, self.output_dim) # check notes for validation step here
-        trg = trg_sorted.reshape(-1)
+            # without sos at the beginning (as this is the ground truth seq. we append sos ourselves in the beginning)
+            trg = trg_seq[1:].transpose(0, 1)
 
-        # Calculate cross entropy loss ignoring 0 trg indices
-        loss = self.loss(logits, trg) # all '0' trg indices are ignored for loss calculation internally
+            # Now sort trg and output by trg_len before feeding to pla function
+            trg_sorted, logits_sorted, trg_lengths_sorted = self.sort_labels(logits, trg, trg_lengths)
+            pred_sorted = logits_sorted.argmax(dim=2)
+            pred_probs_sorted = F.softmax(logits_sorted, dim=2)
 
-        # sequence accuracy: compare list of predicted ids for all sequences in a batch to targets
-        device = pred_sorted.device
-        accuracy = Accuracy(task="multiclass", num_classes=self.output_dim, ignore_index=self.pad_idx).to(device)
-        acc = accuracy(pred_sorted.reshape(-1), trg)
+            if self.use_pla:
+                # Now reorder targets for position loss alignment (PLA)
+                trg_sorted = self.order_the_targets_pla(logits_sorted, trg_sorted, trg_lengths_sorted)
 
-        if self.use_pred_eos:
-            # Make EOS tokens also to zero for loss calculation & also accuracy as below
-            pred_eos_mask, pred_len_till_eos = self.create_eos_mask(pred_sorted, from_eos=self.exclude_eos)
-            pred_sorted *= pred_eos_mask
-            pred_len_to_use = pred_len_till_eos if self.exclude_eos else pred_len_till_eos + 1
+            # accumulate across batch
+            # trg = [(trg len - 1) * batch size]
+            # logits = [(trg len - 1) * batch size, output dim]
+
+            if self.exclude_eos:
+                # Make EOS tokens also to zero for loss calculation & also accuracy as below
+                trg_from_eos_mask, trg_len_till_eos = self.create_eos_mask(trg_sorted, from_eos=True)
+                trg_sorted *= trg_from_eos_mask
+            else:
+                # Get mask for tokens after EOS token
+                trg_after_eos_mask, trg_len_till_eos = self.create_eos_mask(trg_sorted, from_eos=False)
+
+            trg_len_to_use = trg_len_till_eos if self.exclude_eos else trg_len_till_eos + 1
+
+            logits = logits_sorted.view(-1, self.output_dim) # check notes for validation step here
+            trg = trg_sorted.reshape(-1)
+
+        if self.use_base_model:
+            # Calculate binary cross entropy loss
+            loss = self.loss(logits_bm, trg_bm)
+
+            # sequence accuracy: compare list of predicted ids for all sequences in a batch to targets
+            device = logits_bm.device
+            accuracy = Accuracy(task="multilabel", num_labels=self.output_dim).to(device)
+            acc = accuracy(pred_bm, trg_bm)
         else:
-            mask_to_use = trg_from_eos_mask if self.exclude_eos else trg_after_eos_mask
-            pred_sorted *= mask_to_use
-            pred_len_to_use = trg_len_to_use
+            # Calculate cross entropy loss ignoring 0 trg indices
+            loss = self.loss(logits, trg)  # all '0' trg indices are ignored for loss calculation internally
+
+            # sequence accuracy: compare list of predicted ids for all sequences in a batch to targets
+            device = pred_sorted.device
+            accuracy = Accuracy(task="multiclass", num_classes=self.output_dim, ignore_index=self.pad_idx).to(device)
+            acc = accuracy(pred_sorted.reshape(-1), trg)
+
+            if self.use_pred_eos:
+                # Make EOS tokens also to zero for loss calculation & also accuracy as below
+                pred_eos_mask, pred_len_till_eos = self.create_eos_mask(pred_sorted, from_eos=self.exclude_eos)
+                pred_sorted *= pred_eos_mask
+                pred_len_to_use = pred_len_till_eos if self.exclude_eos else pred_len_till_eos + 1
+            else:
+                mask_to_use = trg_from_eos_mask if self.exclude_eos else trg_after_eos_mask
+                pred_sorted *= mask_to_use
+                pred_len_to_use = trg_len_to_use
 
         # compute precision, recall accuracy and write to file if needed
-        precision, recall = self.calc_accu(pred_sorted,
-                                        trg_sorted,
-                                        pred_len_to_use,
-                                        trg_len_to_use,
-                                        pred_probs_sorted.detach())
+        if self.use_base_model:
+            precision, recall = self.calc_accu(pred=pred_bm,
+                                               tgt=without_sos,
+                                               trg_len=eos_indices,
+                                               pred_probs=pred_probs_bm.detach())
+        else:
+            precision, recall = self.calc_accu(pred_sorted,
+                                            trg_sorted,
+                                            pred_len_to_use,
+                                            trg_len_to_use,
+                                            pred_probs_sorted.detach())
 
         return loss, acc, precision, recall
 
@@ -421,9 +457,9 @@ class Seq2SeqTrainer(pl.LightningModule):
     def calc_accu(self,
                   pred: torch.Tensor,
                   tgt: torch.Tensor,
-                  pred_len: torch.Tensor,
-                  trg_len: torch.Tensor,
-                  pred_probs: torch.Tensor) -> tuple[float, float]:
+                  pred_len: torch.Tensor = None,
+                  trg_len: torch.Tensor = None,
+                  pred_probs: torch.Tensor = None) -> tuple[float, float]:
         """
         Accuracy in terms of precision - percentage of correct (those in tgt) items predicted
         Accuracy in terms of recall - percentage of items predicted that are in tgt
@@ -436,22 +472,29 @@ class Seq2SeqTrainer(pl.LightningModule):
         preds_FP = []
         preds_FN = []
         for batch_indx in range(len(pred)):
-            pred_filter = pred[batch_indx, :][:pred_len[batch_indx]].cpu().tolist()
             tgt_filter = tgt[batch_indx, :][:trg_len[batch_indx]].cpu().tolist()
-            pred_prob_filter = pred_probs[batch_indx, :, :][:pred_len[batch_indx]].cpu().numpy() # e.g., 3x25 array
+            if self.use_base_model:
+                pred_filter = pred[batch_indx, :].nonzero().squeeze(1).cpu().tolist()
+                pred_prob_filter = pred_probs[batch_indx, :].cpu().numpy() # e.g., 3x25 array
+            else:
+                pred_filter = pred[batch_indx, :][:pred_len[batch_indx]].cpu().tolist()
+                pred_prob_filter = pred_probs[batch_indx, :, :][:pred_len[batch_indx]].cpu().numpy()  # e.g., 3x25 array
             TP = set(np.intersect1d(pred_filter, tgt_filter))
             FP = set(np.setdiff1d(pred_filter, tgt_filter))
             diff_elem = set(np.setxor1d(pred_filter, tgt_filter)) # elements only in one of the arrays but not both
             FN = diff_elem - FP
-            if self.output_file:
+            if self.output_file: # TODO for base_model
                 preds_TP.extend([[pred_prob_filter[pred_filter.index(elem), elem],1] for elem in TP])
                 preds_FP.extend([[pred_prob_filter[pred_filter.index(elem), elem],0] for elem in FP])
                 try:
                     preds_FN.extend([[pred_prob_filter[:, elem].max(),1] for elem in FN]) # max. prob. of this element across predicted timesteps
                 except IndexError:
                     logging.info("index error!")
-            precision_accuracy.append(len(TP) / len(pred_filter))
-            recall_accuracy.append(len(TP)/len(tgt_filter))
+            try:
+                precision_accuracy.append(len(TP) / len(pred_filter))
+                recall_accuracy.append(len(TP)/len(tgt_filter))
+            except TypeError:
+                print("hello")
         if self.output_file:
             with open(self.output_file, 'a') as f_object:
                 write_obj = writer(f_object)
@@ -677,6 +720,7 @@ if __name__ == "__main__":
     parser.add_argument("--exclude_eos", type=int, default=0, help="Whether to exclude EOS token for loss and accuracy calculation")
     parser.add_argument("--use_pred_eos", type=int, default=1, help="Whether to use predicted EOS as the last token")
     parser.add_argument("--use_pla", type=int, default=1, help="Whether to use PLA for orderless learning")
+    parser.add_argument("--use_base_model", type=int, default=0, help="Whether to use multi-label classification instead of sequence model")
     parser.add_argument("--train_data_path", type=str, default="./data/ar-training-data_050505_100.txt")
     parser.add_argument("--test_data_path", type=str, default="")
     parser.add_argument("--output_file", type=str, default="")

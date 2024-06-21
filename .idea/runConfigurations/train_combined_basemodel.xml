@@ -1,5 +1,5 @@
 <component name="ProjectRunConfigurationManager">
-  <configuration default="false" name="seq2seq_trainer_activity_recg_debug" type="PythonConfigurationType" factoryName="Python">
+  <configuration default="false" name="train_combined_basemodel" type="PythonConfigurationType" factoryName="Python">
     <module name="seq2seq-attention-pytorch-lightning" />
     <option name="ENV_FILES" value="" />
     <option name="INTERPRETER_OPTIONS" value="" />
@@ -14,7 +14,7 @@
     <option name="ADD_SOURCE_ROOTS" value="true" />
     <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
     <option name="SCRIPT_NAME" value="$PROJECT_DIR$/seq2seq_trainer_activity_recg.py" />
-    <option name="PARAMETERS" value="--gpus &quot;0,&quot; --max_epochs 2 --N_valid_size 0.2 --log_dir train/debug --exclude_eos 1 --use_pred_eos 0 --use_pla 0 --teacher_forcing_ratio 0 --use_base_model 1" />
+    <option name="PARAMETERS" value="--gpus &quot;0,&quot; --train_data_path ../ar-training-data_combined.txt --max_epochs 100 --N_valid_size 0.2 --exclude_eos 1 --use_pred_eos 0 --use_pla 0 --teacher_forcing_ratio 0 --use_base_model 1 --log_dir train/base_model/~eos" />
     <option name="SHOW_COMMAND_LINE" value="false" />
     <option name="EMULATE_TERMINAL" value="false" />
     <option name="MODULE_MODE" value="false" />
