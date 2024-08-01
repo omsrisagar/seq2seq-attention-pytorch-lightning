@@ -1,9 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <module type="PYTHON_MODULE" version="4">
   <component name="NewModuleRootManager">
+    <content url="file://$USER_HOME$/Dropbox/PhD/Projects/myutils/src">
+      <sourceFolder url="file://$USER_HOME$/Dropbox/PhD/Projects/myutils/src" isTestSource="false" />
+    </content>
     <content url="file://$MODULE_DIR$" />
     <orderEntry type="jdk" jdkName="pytorch_lit" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
+    <orderEntry type="module" module-name="myutils" />
   </component>
   <component name="PyDocumentationSettings">
     <option name="format" value="PLAIN" />
