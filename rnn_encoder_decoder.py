@@ -99,7 +99,7 @@ class Encoder(pl.LightningModule):
         # packed_outputs is a packed sequence containing all hidden states
         # hidden is now from the final non-padded element in the batch
 
-        outputs, _ = nn.utils.rnn.pad_packed_sequence(packed_outputs)
+        outputs, _ = nn.utils.rnn.pad_packed_sequence(packed_outputs) # last non-padded output should be = hidden
 
         # outputs is now a non-packed sequence, all hidden states obtained
         #  when the input is a pad token are all zeros

@@ -63,6 +63,7 @@ class Seq2SeqTrainer(pl.LightningModule):
         use_pred_eos=True, # if True, tokens till EOS is predicted are taken as output, else till ground truth EOS
         use_pla=True, # whether to include orderless PLA for reordering targets; if False default order of tgts is used
         use_base_model=False,
+        use_max_seq_len=False, # whether to use max. sequence len for predicting
         **kwargs,
     ) -> None:
         super().__init__()
@@ -86,6 +87,7 @@ class Seq2SeqTrainer(pl.LightningModule):
         self.use_pla = use_pla
 
         self.use_base_model = use_base_model
+        self.use_max_seq_len = use_max_seq_len
 
         self.pad_idx = padding_index
 
@@ -111,8 +113,8 @@ class Seq2SeqTrainer(pl.LightningModule):
         # self.register_buffer("input_trg", torch.LongTensor(1))
 
         if self.use_base_model:
-            self.fc1 = nn.Linear(self.enc_hid_dim, self.enc_hid_dim//2)
-            self.fc2 = nn.Linear(self.enc_hid_dim//2, self.output_dim)
+            self.fc1 = nn.Linear(self.enc_hid_dim * 2, self.enc_hid_dim)
+            self.fc2 = nn.Linear(self.enc_hid_dim, self.output_dim)
             self._loss = nn.BCEWithLogitsLoss()
         else:
             self._loss = nn.CrossEntropyLoss(ignore_index=self.pad_idx)
@@ -172,12 +174,17 @@ class Seq2SeqTrainer(pl.LightningModule):
         # hidden is the final forward and backward hidden states, passed through a linear layer
         encoder_outputs, hidden = self.encoder(src, src_len)
 
-        if self.use_base_model:
-            return self.fc2(self.fc1(hidden))
-
         mask = self.create_mask(src)
         # mask = [batch size, src len]
         # without sos token at the beginning and eos token at the end
+
+        if self.use_base_model:
+            # return self.fc2(self.fc1(hidden))
+            layer1 = self.fc1(encoder_outputs).transpose(0, 1) # batch_size x time_dim x hidden_dim*2
+            # return self.fc2(layer1).sum(dim=1)
+            layer1_true = layer1 * mask.unsqueeze(2) # multiply by mask to zero out padded data
+            layer1_true = torch.sum(layer1_true, dim=1) # sum across time dimension
+            return self.fc2(layer1_true)
 
         # first input to the decoder is the <sos> tokens
         input = trg[0, :]
@@ -297,13 +304,12 @@ class Seq2SeqTrainer(pl.LightningModule):
             trg = trg_seq[1:].transpose(0, 1)
 
             # Now sort trg and output by trg_len before feeding to pla function
-            trg_sorted, logits_sorted, trg_lengths_sorted = self.sort_labels(logits, trg, trg_lengths)
+            if self.use_max_seq_len:
+                trg_sorted, logits_sorted, trg_lengths_sorted = trg, logits, trg_lengths-1
+            else:
+                trg_sorted, logits_sorted, trg_lengths_sorted = self.sort_labels(logits, trg, trg_lengths)
             pred_sorted = logits_sorted.argmax(dim=2)
             pred_probs_sorted = F.softmax(logits_sorted, dim=2)
-
-            if self.use_pla:
-                # Now reorder targets for position loss alignment (PLA)
-                trg_sorted = self.order_the_targets_pla(logits_sorted, trg_sorted, trg_lengths_sorted)
 
             # accumulate across batch
             # trg = [(trg len - 1) * batch size]
@@ -312,14 +318,16 @@ class Seq2SeqTrainer(pl.LightningModule):
             if self.exclude_eos:
                 # Make EOS tokens also to zero for loss calculation & also accuracy as below
                 trg_from_eos_mask, trg_len_till_eos = self.create_eos_mask(trg_sorted, from_eos=True)
-                trg_sorted *= trg_from_eos_mask
+                trg_sorted = trg_sorted * trg_from_eos_mask
             else:
                 # Get mask for tokens after EOS token
                 trg_after_eos_mask, trg_len_till_eos = self.create_eos_mask(trg_sorted, from_eos=False)
 
-            trg_len_to_use = trg_len_till_eos if self.exclude_eos else trg_len_till_eos + 1
+            if self.use_pla:
+                # Now reorder targets for position loss alignment (PLA)
+                trg_sorted = self.order_the_targets_pla(logits_sorted, trg_sorted, trg_lengths_sorted)
 
-            logits = logits_sorted.view(-1, self.output_dim) # check notes for validation step here
+            logits = logits_sorted.reshape(-1, self.output_dim) # check notes for validation step here
             trg = trg_sorted.reshape(-1)
 
         if self.use_base_model:
@@ -343,11 +351,10 @@ class Seq2SeqTrainer(pl.LightningModule):
                 # Make EOS tokens also to zero for loss calculation & also accuracy as below
                 pred_eos_mask, pred_len_till_eos = self.create_eos_mask(pred_sorted, from_eos=self.exclude_eos)
                 pred_sorted *= pred_eos_mask
-                pred_len_to_use = pred_len_till_eos if self.exclude_eos else pred_len_till_eos + 1
             else:
                 mask_to_use = trg_from_eos_mask if self.exclude_eos else trg_after_eos_mask
                 pred_sorted *= mask_to_use
-                pred_len_to_use = trg_len_to_use
+                pred_len_till_eos = trg_len_till_eos
 
         # compute precision, recall accuracy and write to file if needed
         if self.use_base_model:
@@ -358,8 +365,8 @@ class Seq2SeqTrainer(pl.LightningModule):
         else:
             precision, recall = self.calc_accu(pred_sorted,
                                             trg_sorted,
-                                            pred_len_to_use,
-                                            trg_len_to_use,
+                                            pred_len_till_eos,
+                                            trg_len_till_eos,
                                             pred_probs_sorted.detach())
 
         return loss, acc, precision, recall
@@ -386,15 +393,16 @@ class Seq2SeqTrainer(pl.LightningModule):
         changed_batch_indexes = []
         for i in range(N):
             len_wo_eos = label_lengths_sorted[i] - 1 # originally considered by authors without including EOS
-            # len_with_eos = label_lengths_sorted[i]
-            common_indexes = set(targets[i][0:len_wo_eos]).intersection(set(indexes[i]))
-            diff_indexes = set(targets[i][0:len_wo_eos]).difference(set(indexes[i]))
+            len_with_eos = label_lengths_sorted[i]
+            len_to_use = len_with_eos if self.use_max_seq_len else len_wo_eos # originally considered by authors without including EOS
+            common_indexes = set(targets[i][0:len_to_use]).intersection(set(indexes[i])).difference({0})
+            diff_indexes = set(targets[i][0:len_to_use]).difference(set(indexes[i])).difference({0})
             diff_indexes_list = list(diff_indexes)
             common_indexes_copy = common_indexes.copy()
             index_array = np.zeros((len(diff_indexes), len(diff_indexes)))
             if common_indexes != set():
                 changed_batch_indexes.append(i)
-                for j in range(len_wo_eos): # again without considering the last predicted value
+                for j in range(len_to_use): # again without considering the last predicted value
                     if indexes[i][j] in common_indexes:
                         if indexes[i][j] != targets_new[i][j].item():
                             old_value = targets_new[i][j]
@@ -404,13 +412,15 @@ class Seq2SeqTrainer(pl.LightningModule):
                             targets_new[i][j] = new_value
                             targets_new[i][new_value_index] = old_value
                         common_indexes.remove(indexes[i][j].item())
+                        if common_indexes == set():
+                            break
 
             targets_newest[i] = targets_new[i]
             n_different = len(diff_indexes)
             if n_different > 1:
                 diff_indexes_tuples = [[count, elem]
                                        for count, elem in enumerate(
-                        targets_new[i][0:len_wo_eos]) # even here we are considering ground truth without eos
+                        targets_new[i][0:len_to_use]) # even here we are considering ground truth without eos
                                        if elem in diff_indexes]
                 diff_indexes_locations, diff_indexes_ordered = zip(
                     *diff_indexes_tuples)
@@ -447,11 +457,11 @@ class Seq2SeqTrainer(pl.LightningModule):
         eos_indices = eos_mask.argmax(1)
         eos_indices[eos_indices == 0] = pred.shape[1]-1 # if EOS token is not detected, then put max seq len
         # mask[eos_indices:] = 0 # not working
+        if not from_eos:
+            eos_indices += 1 # indices after EOS are made to 0; else from EOS are made to 0
         for batch_indx in range(len(pred)):
-            if from_eos:
-                mask[batch_indx, eos_indices[batch_indx]:] = 0 # indices from EOS are made 0
-            else:
-                mask[batch_indx, eos_indices[batch_indx] + 1:] = 0 # indices after EOS are made 0
+            mask[batch_indx, eos_indices[batch_indx]:] = 0 # indices from EOS are made 0
+
         return mask, eos_indices
 
     def calc_accu(self,
@@ -491,7 +501,7 @@ class Seq2SeqTrainer(pl.LightningModule):
                 except IndexError:
                     logging.info("index error!")
             try:
-                precision_accuracy.append(len(TP) / len(pred_filter))
+                precision_accuracy.append(len(TP) / len(pred_filter) if pred_filter else 0) # no entries predicted if 0
                 recall_accuracy.append(len(TP)/len(tgt_filter))
             except TypeError:
                 print("hello")
@@ -707,6 +717,7 @@ class Seq2SeqTrainer(pl.LightningModule):
 
 if __name__ == "__main__":
 
+    torch.autograd.set_detect_anomaly(True)
 
     # look to .vscode/launch.json file - there are set some args
     parser = ArgumentParser()
@@ -721,11 +732,14 @@ if __name__ == "__main__":
     parser.add_argument("--use_pred_eos", type=int, default=1, help="Whether to use predicted EOS as the last token")
     parser.add_argument("--use_pla", type=int, default=1, help="Whether to use PLA for orderless learning")
     parser.add_argument("--use_base_model", type=int, default=0, help="Whether to use multi-label classification instead of sequence model")
+    parser.add_argument("--use_max_seq_len", type=int, default=0, help="Whether to use maximum possible sequence length for output prediction")
+    parser.add_argument("--same_vocab_in_out", type=int, default=1, help="Whether to use same vocab for both input and output tokens")
     parser.add_argument("--train_data_path", type=str, default="./data/ar-training-data_050505_100.txt")
     parser.add_argument("--test_data_path", type=str, default="")
     parser.add_argument("--output_file", type=str, default="")
     parser.add_argument("--log_dir", type=str, default="./results")
     parser.add_argument("--resume_checkpoint", type=str, default="")
+    parser.add_argument("--debug", action='store_true')
 
     # add model specific args
     parser = Seq2SeqTrainer.add_model_specific_args(parser)
@@ -735,6 +749,11 @@ if __name__ == "__main__":
     parser = pl.Trainer.add_argparse_args(parser)
 
     args = parser.parse_args()
+
+    # change to debug settings if debug mode is passed
+    args.max_epochs = 2 if args.debug else args.max_epochs
+    args.log_dir = "train/debug" if args.debug else args.log_dir
+    args.batch_size = 16 if args.debug else args.batch_size
 
     # configure logging on module level, redirect to file
     train_filename = os.path.basename(args.train_data_path)
@@ -768,20 +787,25 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
         N_valid_size=args.N_valid_size,
         num_workers=args.num_workers,
+        use_max_seq_len=args.use_max_seq_len,
+        same_vocab_in_out=args.same_vocab_in_out,
         train_filename=args.train_data_path,
         test_filename=args.test_data_path,
+        debug_mode=args.debug
     )
 
-    # dm = tl.SeqPairJsonDataModule(
-    #     path=args.dataset_path,
-    #     batch_size=args.batch_size,
-    #     n_samples=args.N_samples,
-    #     n_valid_size=args.N_valid_size,
-    #     num_workers=args.num_workers,
-    # )
+    # # dm = tl.SeqPairJsonDataModule(
+    # #     path=args.dataset_path,
+    # #     batch_size=args.batch_size,
+    # #     n_samples=args.N_samples,
+    # #     n_valid_size=args.N_valid_size,
+    # #     num_workers=args.num_workers,
+    # # )
+    #
+    # # with redirect_stdout(log_fh):
+    # #     dm.prepare_data()
 
-    # with redirect_stdout(log_fh):
-    #     dm.prepare_data()
+    # this will be run twice; once by us to keep vocab dim to be passed to model and once by trainer itself.
     dm.setup("fit")
 
     # to see results run in console

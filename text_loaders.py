@@ -50,9 +50,13 @@ class Vocab:
         first, second = word.split('_', 1)
         return second if 'HISTORY' in first else word
 
-    def addSequence(self, sequence):
+    def addSequence(self, sequence, mode="input"):
         words = sequence.split(',')
         words = [self.filter_word(word) for word in words if word and not word.isspace()]
+        if mode == "output":
+            words_no_dup = []
+            [words_no_dup.append(w) for w in words if w not in words_no_dup]
+            words = words_no_dup
         if len(words) > self.max_seq_len:
             self.max_seq_len = len(words)
         for word in words:
@@ -68,19 +72,23 @@ class Vocab:
             self.word2count[word] += 1
 
 class SequenceDataset(Dataset):
-    def __init__(self, pairs, transform=None):
+    def __init__(self, pairs, use_max_seq_len=False, transform=None):
         self.pairs = pairs
         # Sanity check
         for pair in self.pairs:
-            assert pair[0][0].data == 3 # start index should be SOS
-            assert pair[0][-1].data == 2 # end index needs to be EOS
-            assert pair[1][0].data == 3 # same
-            assert pair[1][-1].data == 2 # same
-            # there should be no 0s --> 0s are used only for padding
-            pair0_indices = torch.nonzero(pair[0] == 0)
-            assert len(pair0_indices) == 0
-            pair1_indices = torch.nonzero(pair[1] == 0)
-            assert len(pair1_indices) == 0
+            assert pair[0][0].data == SOS_token # start index should be SOS
+            assert pair[1][0].data == SOS_token # same
+            if use_max_seq_len:
+                assert pair[0][-1].data == EOS_token or pair[0][-1].data == PAD_token  # end index needs to be EOS or PAD
+                assert pair[1][-1].data == EOS_token or pair[1][-1].data == PAD_token  # same
+            else:
+                assert pair[0][-1].data == 2 # end index needs to be EOS
+                assert pair[1][-1].data == 2 # same
+                # there should be no 0s --> 0s are used only for padding
+                pair0_indices = torch.nonzero(pair[0] == 0)
+                assert len(pair0_indices) == 0
+                pair1_indices = torch.nonzero(pair[1] == 0)
+                assert len(pair1_indices) == 0
             # there should be no 1s ; 1s are for unknown tokens; in our case we use all the tokens in the dataset
             pair0_indices = torch.nonzero(pair[0] == 1)
             assert len(pair0_indices) == 0
@@ -111,7 +119,8 @@ class ActivityRecDataModule(pl.LightningDataModule):
     '''
 
     def __init__(
-            self, batch_size=4, N_valid_size=200, num_workers=1, train_filename=None, test_filename=None
+            self, batch_size=4, N_valid_size=200, num_workers=1, use_max_seq_len=False,
+            same_vocab_in_out=True, train_filename=None, test_filename=None, debug_mode=False
     ):
         super().__init__()
 
@@ -120,6 +129,10 @@ class ActivityRecDataModule(pl.LightningDataModule):
         self.test_filename = test_filename
         self.N_valid_size = N_valid_size
         self.num_workers = num_workers
+        self.use_max_seq_len = use_max_seq_len
+        self.same_vocab_in_out = same_vocab_in_out
+        self.max_seq_len_out = None
+        self.debug_mode = debug_mode
 
 
     def read_file(self, filename):
@@ -127,42 +140,58 @@ class ActivityRecDataModule(pl.LightningDataModule):
 
         # Read the file and split into lines
         lines = open(filename).read().strip().split('\n')
+        lines = lines[:100] if self.debug_mode else lines
 
         # Split every line into pairs and normalize
         pairs = [l.split('#') for l in lines if l]
         logging.info("Read %s sequence pairs" % len(pairs))
-        input_vocab = Vocab('activity_recognition_vocab')
-        # output_vocab = Vocab('activity_recognition_output')
-        output_vocab = input_vocab # since both input and output have activities
+        if self.same_vocab_in_out:
+            input_vocab = Vocab('activity_recognition_vocab')
+            output_vocab = input_vocab # since both input and output have activities
+        else:
+            input_vocab = Vocab('Activity Recognition Input Vocab')
+            output_vocab = Vocab('Activity Recognition Output Vocab')
 
         return input_vocab, output_vocab, pairs
 
-    def gen_sequences(self, filename):
+    def gen_sequences(self, filename, stage='test', test_filename=None):
         """generates input and output sequences from file
         """
         input_vocab, output_vocab, pairs = self.read_file(filename)
-        logging.info(f"Counting words from {filename}...")
-        for pair in pairs:
-            input_vocab.addSequence(pair[0])
-            output_vocab.addSequence(pair[1])
-        logging.info("Counted words:")
-        logging.info(f"{input_vocab.name}, {input_vocab.n_words}")
-        logging.info(f"{output_vocab.name}, {output_vocab.n_words}")
-        return input_vocab, output_vocab, pairs
+        if stage == 'fit':
+            _, _, test_pairs = self.read_file(test_filename)
+            logging.info(f"Counting words from {filename} and {test_filename}...")
+            for pair in pairs + test_pairs:
+                output_vocab.addSequence(pair[1], mode='output') # first do the output, so we can get max_seq_len for output in case we use
+                # same vocab for both input and output
+            self.max_seq_len_out = output_vocab.max_seq_len
+            for pair in pairs + test_pairs:
+                input_vocab.addSequence(pair[0])
+            logging.info("Counted following words and max_seq_len for each Vocab")
+            logging.info(f"{input_vocab.name}: {input_vocab.n_words}, {input_vocab.max_seq_len}")
+            logging.info(f"{output_vocab.name}: {output_vocab.n_words}, {output_vocab.max_seq_len}")
+        return input_vocab, output_vocab, pairs # return only train pairs in case stage == 'fit'
 
-    def indexes_from_sequence(self, vocab, sequence):
+    def indexes_from_sequence(self, vocab, sequence, mode=None):
         words = sequence.split(',')
         words = [vocab.filter_word(word) for word in words if word and not word.isspace()]
+        if mode == "output":
+            words_no_dup = []
+            [words_no_dup.append(w) for w in words if w not in words_no_dup]
+            words = words_no_dup
         return [SOS_token] + [vocab.word2index[word] for word in words]
 
-    def tensor_from_sequence(self, vocab, sequence):
-        indexes = self.indexes_from_sequence(vocab, sequence)
+    def tensor_from_sequence(self, vocab, sequence, mode=None):
+        indexes = self.indexes_from_sequence(vocab, sequence, mode)
         indexes.append(EOS_token)
+        if mode == 'output' and self.use_max_seq_len: # pad with PAD_token till max_seq_len + 2
+            diff_len = self.max_seq_len_out + 2 - len(indexes)
+            indexes.extend([PAD_token for _ in range(diff_len)])
         return torch.tensor(indexes, dtype=torch.long)
 
     def tensors_from_pair(self, pair, input_vocab, output_vocab):
-        input_tensor = self.tensor_from_sequence(input_vocab, pair[0])
-        target_tensor = self.tensor_from_sequence(output_vocab, pair[1])
+        input_tensor = self.tensor_from_sequence(input_vocab, pair[0], mode='input')
+        target_tensor = self.tensor_from_sequence(output_vocab, pair[1], mode='output')
         return (input_tensor, target_tensor)
 
     def gen_tensors(self, pairs):
@@ -198,21 +227,25 @@ class ActivityRecDataModule(pl.LightningDataModule):
         # self.train_full_dataset = self.gen_tensors(train_pairs, self.input_vocab, self.output_vocab)
         # self.test_dataset = self.gen_tensors(val_pairs, self.input_vocab, self.output_vocab)
         if stage == 'fit':
-            self.input_vocab, self.output_vocab, train_pairs = self.gen_sequences(self.train_filename) # input and output vocab are same objects
+            self.input_vocab, self.output_vocab, train_pairs = self.gen_sequences(self.train_filename, stage, self.test_filename) # input and output vocab are same objects
+            if self.debug_mode:
+                train_pairs = train_pairs[:100]
             logging.info("Example train pair: raw and tensor formats")
             logging.info(random.choice(train_pairs))
             tensor_train_pairs = self.gen_tensors(train_pairs)
             logging.info(random.choice(tensor_train_pairs))
-            train_dataset = SequenceDataset(tensor_train_pairs)
+            train_dataset = SequenceDataset(tensor_train_pairs, use_max_seq_len=self.use_max_seq_len)
             self.train_data, self.val_data = random_split(train_dataset, [1-self.N_valid_size, self.N_valid_size])
 
         if stage == 'test':
             _, _, test_pairs = self.gen_sequences(self.test_filename)
+            if self.debug_mode:
+                test_pairs = test_pairs[:100]
             logging.info("Example test pair: raw and tensor formats")
             logging.info(random.choice(test_pairs))
             tensor_test_pairs = self.gen_tensors(test_pairs)
             logging.info(random.choice(tensor_test_pairs))
-            self.test_data = SequenceDataset(tensor_test_pairs)
+            self.test_data = SequenceDataset(tensor_test_pairs, use_max_seq_len=self.use_max_seq_len)
 
     def __collate_fn(self, sample: list, prepare_target=True):
         """
