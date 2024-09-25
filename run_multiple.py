@@ -22,7 +22,7 @@ if __name__ == "__main__":
 
     exp_name = os.path.basename(args.data_dir)
     model_names = ['no_pla', 'pla', 'base_model']
-    model_names = [model_names[-1]]
+    # model_names = [model_names[-1]]
 
     # Regular Seq2Seq model
     nopla_base_cmd = "python seq2seq_trainer_activity_recg.py --gpus 0, --batch_size 512 --max_epochs 100 --N_valid_size 0.2 --exclude_eos 1 --use_pred_eos 0 --use_pla 0 --teacher_forcing_ratio 1 --use_base_model 0 --use_max_seq_len 1 --same_vocab_in_out 0"
@@ -31,10 +31,10 @@ if __name__ == "__main__":
     pla_base_cmd = "python seq2seq_trainer_activity_recg.py --gpus 0, --batch_size 512 --max_epochs 100 --N_valid_size 0.2 --exclude_eos 1 --use_pred_eos 0 --use_pla 1 --teacher_forcing_ratio 0 --use_base_model 0 --use_max_seq_len 1 --same_vocab_in_out 0"
 
     # # Multi-label classification (base model)
-    bm_base_cmd = "python seq2seq_trainer_activity_recg.py --gpus 0, --batch_size 512 --max_epochs 1 --N_valid_size 0.2 --exclude_eos 1 --use_pred_eos 0 --use_pla 0 --teacher_forcing_ratio 0 --use_base_model 1 --same_vocab_in_out 0"
+    bm_base_cmd = "python seq2seq_trainer_activity_recg.py --gpus 0, --batch_size 512 --max_epochs 100 --N_valid_size 0.2 --exclude_eos 1 --use_pred_eos 0 --use_pla 0 --teacher_forcing_ratio 0 --use_base_model 1 --same_vocab_in_out 0"
 
     base_cmds = [nopla_base_cmd, pla_base_cmd, bm_base_cmd]
-    base_cmds = [base_cmds[-1]]
+    # base_cmds = [base_cmds[-1]]
 
     training_files = glob.glob(os.path.join(args.data_dir, "ar-training-*"))
     training_files = training_files[:6] if args.debug else training_files

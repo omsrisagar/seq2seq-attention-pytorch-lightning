@@ -18,10 +18,7 @@ if __name__ == "__main__":
     # add PROGRAM level args
     # parser.add_argument("--N_samples", type=int, default=256 * 10)
     parser.add_argument("--data_dir", type=str, default="data/240712_Experimenal_Data/varying_all_noise", help="path to the directory containing training files")
-    # parser.add_argument("--cmds_to_run_file", type=str, default="", help="path to the file containing list of commands to run")
-    # parser.add_argument("--num_workers", type=int, default=0, help="number of parallel workers; give 0 to use all 16")
     parser.add_argument("--debug", action='store_true', help='adds --debug flag to runs')
-    # parser.add_argument("--resume_checkpoint", action='store_true', help='loads the latest checkpoint')
     args = parser.parse_args()
 
     exp_name = os.path.basename(args.data_dir)
@@ -67,7 +64,8 @@ if __name__ == "__main__":
             output_path=Path('train', 'results', exp_name),
             desc=key,
             y=value,
-            xlabel='Probability of noise added',
+            # xlabel='Probability of noise added',
+            xlabel='Varying Seed Deviation',
             ylabel=metrics_desc_dict[key],
             x=np.arange(0, 0.91, 0.05),
             legend=legend_model_names,
