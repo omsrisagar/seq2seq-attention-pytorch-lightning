@@ -16,6 +16,9 @@ if __name__ == "__main__":
     parser.add_argument("--data_dir", type=str, default="data/240712_Experimenal_Data/varying_all_noise", help="path to the directory containing training files")
     parser.add_argument("--cmds_to_run_file", type=str, default="", help="path to the file containing list of commands to run")
     parser.add_argument("--num_workers", type=int, default=0, help="number of parallel workers; give 0 to use all 16")
+    parser.add_argument("--gpus", type=str, default="-1", help="Which gpus to train on e.g., '1,4'; use -1 to train on all")
+    parser.add_argument("--max_epochs", type=int, default=70, help="Number of epochs to run")
+    parser.add_argument("--batch_size", type=int, default=512, help="Batch size for training")
     parser.add_argument("--debug", action='store_true', help='adds --debug flag to runs')
     parser.add_argument("--resume_checkpoint", action='store_true', help='loads the latest checkpoint')
     args = parser.parse_args()
@@ -25,13 +28,13 @@ if __name__ == "__main__":
     # model_names = [model_names[-1]]
 
     # Regular Seq2Seq model
-    nopla_base_cmd = "python seq2seq_trainer_activity_recg.py --gpus 0, --batch_size 512 --max_epochs 100 --N_valid_size 0.2 --exclude_eos 1 --use_pred_eos 0 --use_pla 0 --teacher_forcing_ratio 1 --use_base_model 0 --use_max_seq_len 1 --same_vocab_in_out 0"
+    nopla_base_cmd = f"python seq2seq_trainer_activity_recg.py --gpus {args.gpus}, --batch_size {args.batch_size} --max_epochs {args.max_epochs} --N_valid_size 0.2 --exclude_eos 1 --use_pred_eos 0 --use_pla 0 --teacher_forcing_ratio 1 --use_base_model 0 --use_max_seq_len 0 --same_vocab_in_out 0"
 
     # PLA based seq2seq model
-    pla_base_cmd = "python seq2seq_trainer_activity_recg.py --gpus 0, --batch_size 512 --max_epochs 100 --N_valid_size 0.2 --exclude_eos 1 --use_pred_eos 0 --use_pla 1 --teacher_forcing_ratio 0 --use_base_model 0 --use_max_seq_len 1 --same_vocab_in_out 0"
+    pla_base_cmd = f"python seq2seq_trainer_activity_recg.py --gpus {args.gpus}, --batch_size {args.batch_size} --max_epochs {args.max_epochs} --N_valid_size 0.2 --exclude_eos 1 --use_pred_eos 0 --use_pla 1 --teacher_forcing_ratio 0 --use_base_model 0 --use_max_seq_len 0 --same_vocab_in_out 0"
 
     # # Multi-label classification (base model)
-    bm_base_cmd = "python seq2seq_trainer_activity_recg.py --gpus 0, --batch_size 512 --max_epochs 100 --N_valid_size 0.2 --exclude_eos 1 --use_pred_eos 0 --use_pla 0 --teacher_forcing_ratio 0 --use_base_model 1 --same_vocab_in_out 0"
+    bm_base_cmd = f"python seq2seq_trainer_activity_recg.py --gpus {args.gpus}, --batch_size {args.batch_size} --max_epochs {args.max_epochs} --N_valid_size 0.2 --exclude_eos 1 --use_pred_eos 0 --use_pla 0 --teacher_forcing_ratio 0 --use_base_model 1 --same_vocab_in_out 0"
 
     base_cmds = [nopla_base_cmd, pla_base_cmd, bm_base_cmd]
     # base_cmds = [base_cmds[-1]]
