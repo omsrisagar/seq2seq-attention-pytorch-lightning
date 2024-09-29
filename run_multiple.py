@@ -28,13 +28,13 @@ if __name__ == "__main__":
     # model_names = [model_names[-1]]
 
     # Regular Seq2Seq model
-    nopla_base_cmd = f"python seq2seq_trainer_activity_recg.py --gpus {args.gpus}, --batch_size {args.batch_size} --max_epochs {args.max_epochs} --N_valid_size 0.2 --exclude_eos 1 --use_pred_eos 0 --use_pla 0 --teacher_forcing_ratio 1 --use_base_model 0 --use_max_seq_len 0 --same_vocab_in_out 0"
+    nopla_base_cmd = f"python seq2seq_trainer_activity_recg.py --gpus {args.gpus} --batch_size {args.batch_size} --max_epochs {args.max_epochs} --N_valid_size 0.2 --exclude_eos 1 --use_pred_eos 0 --use_pla 0 --teacher_forcing_ratio 1 --use_base_model 0 --use_max_seq_len 0 --same_vocab_in_out 0"
 
     # PLA based seq2seq model
-    pla_base_cmd = f"python seq2seq_trainer_activity_recg.py --gpus {args.gpus}, --batch_size {args.batch_size} --max_epochs {args.max_epochs} --N_valid_size 0.2 --exclude_eos 1 --use_pred_eos 0 --use_pla 1 --teacher_forcing_ratio 0 --use_base_model 0 --use_max_seq_len 0 --same_vocab_in_out 0"
+    pla_base_cmd = f"python seq2seq_trainer_activity_recg.py --gpus {args.gpus} --batch_size {args.batch_size} --max_epochs {args.max_epochs} --N_valid_size 0.2 --exclude_eos 1 --use_pred_eos 0 --use_pla 1 --teacher_forcing_ratio 0 --use_base_model 0 --use_max_seq_len 0 --same_vocab_in_out 0"
 
     # # Multi-label classification (base model)
-    bm_base_cmd = f"python seq2seq_trainer_activity_recg.py --gpus {args.gpus}, --batch_size {args.batch_size} --max_epochs {args.max_epochs} --N_valid_size 0.2 --exclude_eos 1 --use_pred_eos 0 --use_pla 0 --teacher_forcing_ratio 0 --use_base_model 1 --same_vocab_in_out 0"
+    bm_base_cmd = f"python seq2seq_trainer_activity_recg.py --gpus {args.gpus} --batch_size {args.batch_size} --max_epochs {args.max_epochs} --N_valid_size 0.2 --exclude_eos 1 --use_pred_eos 0 --use_pla 0 --teacher_forcing_ratio 0 --use_base_model 1 --same_vocab_in_out 0"
 
     base_cmds = [nopla_base_cmd, pla_base_cmd, bm_base_cmd]
     # base_cmds = [base_cmds[-1]]
