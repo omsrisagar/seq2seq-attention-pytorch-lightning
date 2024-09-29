@@ -848,9 +848,28 @@ if __name__ == "__main__":
     from pytorch_lightning.callbacks import LearningRateMonitor
 
     lr_monitor = LearningRateMonitor(logging_interval="step")
+    from pytorch_lightning.callbacks import ModelCheckpoint
 
+    # saves top-K checkpoints based on "val_loss" metric
+    best_checkpoint = ModelCheckpoint(
+        save_top_k=1,
+        monitor="val_loss",
+        mode="min",
+        # dirpath="my/path/",
+        filename="best-{epoch:02d}-{val_loss:.2f}",
+    )
+
+    # saves last-K checkpoints based on "global_step" metric
+    # make sure you log it inside your LightningModule
+    last_checkpoint = ModelCheckpoint(
+        save_top_k=1,
+        monitor="step",
+        mode="max",
+        # dirpath="my/path/",
+        filename="last-{epoch:02d}-{step}",
+    )
     trainer = pl.Trainer.from_argparse_args(
-        args, logger=[csv_logger, tb_logger], callbacks=[lr_monitor]
+        args, logger=[csv_logger, tb_logger], callbacks=[lr_monitor, best_checkpoint, last_checkpoint]
     )  # , distributed_backend='ddp_cpu')
 
     model_args = vars(args)
@@ -870,7 +889,8 @@ if __name__ == "__main__":
     # Test the performance
     logging.info("\n-------Performing Testing on Provided Evaluation/Test File---------\n")
     dm.setup('test')
-    trainer.test(model, datamodule=dm)
+    print(f"Testing with the best checkpoint: {trainer.checkpoint_callback.best_model_path}")
+    trainer.test(model, ckpt_path='best', datamodule=dm)
 
 # sample cmd
 
