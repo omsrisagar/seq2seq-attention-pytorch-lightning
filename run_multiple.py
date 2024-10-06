@@ -14,6 +14,7 @@ if __name__ == "__main__":
     # add PROGRAM level args
     # parser.add_argument("--N_samples", type=int, default=256 * 10)
     parser.add_argument("--data_dir", type=str, default="data/240712_Experimenal_Data/varying_all_noise", help="path to the directory containing training files")
+    parser.add_argument("--base_folder", type=str, default="train", help="path to the root training folder where pla no_pla and bm train results are stored")
     parser.add_argument("--cmds_to_run_file", type=str, default="", help="path to the file containing list of commands to run")
     parser.add_argument("--num_workers", type=int, default=0, help="number of parallel workers; give 0 to use all 16")
     parser.add_argument("--gpus", type=str, default="-1", help="Which gpus to train on e.g., '1,4'; use -1 to train on all")
@@ -24,6 +25,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     exp_name = os.path.basename(args.data_dir)
+    os.makedirs(args.base_folder, exist_ok=True)
     model_names = ['no_pla', 'pla', 'base_model']
     # model_names = [model_names[-1]]
 
@@ -54,14 +56,14 @@ if __name__ == "__main__":
             addon_str += " --train_data_path " + file
             for i in range(len(model_names)):
                 # Add model dependent run args here
-                logdir = Path('train', model_names[i], exp_name)
+                logdir = Path(args.base_folder, model_names[i], exp_name)
                 model_addon_str = " --log_dir " + str(logdir)
                 if args.resume_checkpoint:
                     ckpt_dir = Path(logdir, Path(file).stem, 'csv_logs')
                     last_version = sorted(os.listdir(ckpt_dir), reverse=True)[0]
                     ckpt = str(next(Path(ckpt_dir, last_version, 'checkpoints').iterdir()))
                     assert ckpt.endswith('.ckpt'), "Not a checkpoint file"
-                    assert 'epoch=99' in ckpt, "ckpt not trained till epoch 100"
+                    assert 'epoch=99' in ckpt, "ckpt not trained till epoch 100" # hard coded for now, check!
                     model_addon_str += " --resume_checkpoint " + ckpt
                 commands_to_run.append(base_cmds[i] + addon_str + model_addon_str)
 
@@ -83,7 +85,7 @@ if __name__ == "__main__":
         print("\nFollowing runs failed!\n")
         print(failed_runs)
         print(f"\nNumber of failed runs: {len(failed_runs)}\n Saving list to train/failed_runs.pkl")
-        with open('train/failed_runs.pkl', 'wb') as file:
+        with open(os.path.join(args.base_folder, 'failed_runs.pkl'), 'wb') as file:
             pickle.dump(failed_runs, file)
     print(f"Finished running in {(time.time() - start_time)/3600} hours")
 

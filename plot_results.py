@@ -18,6 +18,7 @@ if __name__ == "__main__":
     # add PROGRAM level args
     # parser.add_argument("--N_samples", type=int, default=256 * 10)
     parser.add_argument("--data_dir", type=str, default="data/240712_Experimenal_Data/varying_all_noise", help="path to the directory containing training files")
+    parser.add_argument("--base_folder", type=str, default="train", help="path to the root training folder where pla no_pla and bm train results are stored")
     parser.add_argument("--debug", action='store_true', help='adds --debug flag to runs')
     args = parser.parse_args()
 
@@ -40,7 +41,7 @@ if __name__ == "__main__":
 
     for i in range(len(model_names)):
         for j in range(len(training_files)):
-            logdir = Path('train', model_names[i], exp_name)
+            logdir = Path(args.base_folder, model_names[i], exp_name)
             ckpt_dir = Path(logdir, Path(training_files[j]).stem, 'csv_logs')
             last_version = sorted(os.listdir(ckpt_dir), reverse=True)[0]
             csv_file = Path(ckpt_dir, last_version, 'metrics.csv')
@@ -61,11 +62,11 @@ if __name__ == "__main__":
 
     for key, value in metrics_dict.items():
         plot_figures(
-            output_path=Path('train', 'results', exp_name),
+            output_path=Path(args.base_folder, 'results', exp_name),
             desc=key,
             y=value,
-            # xlabel='Probability of noise added',
-            xlabel='Varying Seed Deviation',
+            xlabel='Probability of noise added',
+            # xlabel='Varying Seed Deviation',
             ylabel=metrics_desc_dict[key],
             x=np.arange(0, 0.91, 0.05),
             legend=legend_model_names,

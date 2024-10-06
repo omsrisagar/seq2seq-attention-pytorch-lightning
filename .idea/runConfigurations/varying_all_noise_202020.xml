@@ -1,8 +1,0 @@
-<component name="ProjectRunConfigurationManager">
-  <configuration default="false" name="varying_all_noise_202020" type="CompoundRunConfigurationType">
-    <toRun name="seq2seq_trainer_activity_recg_orig_basemodel" type="PythonConfigurationType" />
-    <toRun name="seq2seq_trainer_activity_recg_orig_nopla" type="PythonConfigurationType" />
-    <toRun name="seq2seq_trainer_activity_recg_orig_pla" type="PythonConfigurationType" />
-    <method v="2" />
-  </configuration>
-</component>
