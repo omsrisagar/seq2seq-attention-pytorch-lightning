@@ -17,7 +17,7 @@ if __name__ == "__main__":
     parser.add_argument("--base_folder", type=str, default="train", help="path to the root training folder where pla no_pla and bm train results are stored")
     parser.add_argument("--cmds_to_run_file", type=str, default="", help="path to the file containing list of commands to run")
     parser.add_argument("--num_workers", type=int, default=0, help="number of parallel workers; give 0 to use all 16")
-    parser.add_argument("--gpus", type=str, default="-1", help="Which gpus to train on e.g., '1,4'; use -1 to train on all")
+    parser.add_argument("--gpus", type=str, default="0,", help="Which gpus to train on e.g., '1,4'; use -1 to train on all--> might use DDP!")
     parser.add_argument("--max_epochs", type=int, default=70, help="Number of epochs to run")
     parser.add_argument("--batch_size", type=int, default=512, help="Batch size for training")
     parser.add_argument("--debug", action='store_true', help='adds --debug flag to runs')
@@ -85,7 +85,7 @@ if __name__ == "__main__":
         print("\nFollowing runs failed!\n")
         print(failed_runs)
         print(f"\nNumber of failed runs: {len(failed_runs)}\n Saving list to train/failed_runs.pkl")
-        with open(os.path.join(args.base_folder, 'failed_runs.pkl'), 'wb') as file:
+        with open(Path(args.base_folder, 'failed_runs.pkl'), 'wb') as file:
             pickle.dump(failed_runs, file)
     print(f"Finished running in {(time.time() - start_time)/3600} hours")
 

@@ -8,6 +8,7 @@ import numpy as np
 from csv import writer
 import logging
 from contextlib import redirect_stdout
+import statistics as s
 
 # # python.dataScience.notebookFileRoot=${fileDirname}
 # wdir = os.path.abspath(os.getcwd() + "/../../")
@@ -367,16 +368,16 @@ class Seq2SeqTrainer(pl.LightningModule):
 
         # compute precision, recall accuracy and write to file if needed
         if self.use_base_model:
-            precision, recall = self.calc_accu(pred=pred_bm,
-                                               tgt=without_sos,
-                                               pred_probs=pred_probs_bm.detach())
+            precision, recall, f1, precision_err, recall_err, f1_err = self.calc_accu(pred=pred_bm,
+                                                                       tgt=without_sos,
+                                                                       pred_probs=pred_probs_bm.detach())
         else:
-            precision, recall = self.calc_accu(pred_sorted,
-                                            trg_sorted,
-                                            pred_len_till_eos,
-                                            pred_probs_sorted.detach())
+            precision, recall, f1, precision_err, recall_err, f1_err = self.calc_accu(pred_sorted,
+                                                                    trg_sorted,
+                                                                    pred_len_till_eos,
+                                                                    pred_probs_sorted.detach())
 
-        return loss, acc, precision, recall
+        return loss, acc, precision, recall, f1, precision_err, recall_err, f1_err
 
     def sort_labels(self, pred, tgt, tgt_len):
         """
@@ -478,7 +479,7 @@ class Seq2SeqTrainer(pl.LightningModule):
                   pred: torch.Tensor,
                   tgt: torch.Tensor,
                   pred_len: torch.Tensor = None,
-                  pred_probs: torch.Tensor = None) -> tuple[float, float]:
+                  pred_probs: torch.Tensor = None):
         """
         Accuracy in terms of precision - percentage of correct (those in tgt) items predicted
         Accuracy in terms of recall - percentage of items predicted that are in tgt
@@ -487,6 +488,7 @@ class Seq2SeqTrainer(pl.LightningModule):
         """
         precision_accuracy = []
         recall_accuracy = []
+        f1_scores = []
         preds_TP = []
         preds_FP = []
         preds_FN = []
@@ -525,8 +527,12 @@ class Seq2SeqTrainer(pl.LightningModule):
                     except IndexError:
                         logging.info("index error!")
             try:
-                precision_accuracy.append(len(TP) / len(pred_filter) if pred_filter else 0) # no entries predicted if 0
-                recall_accuracy.append(len(TP)/len(tgt_filter))
+                precision = len(TP) / len(pred_filter) if pred_filter else 0 # no entries predicted if 0
+                recall = len(TP)/len(tgt_filter)
+                f1_score = s.harmonic_mean([precision, recall])
+                precision_accuracy.append(precision)
+                recall_accuracy.append(recall)
+                f1_scores.append(f1_score)
             except TypeError:
                 print("hello")
         if self.output_file:
@@ -536,11 +542,18 @@ class Seq2SeqTrainer(pl.LightningModule):
                 write_obj.writerows(preds_FP)
                 write_obj.writerows(preds_FN)
                 f_object.close()
-        return np.mean(precision_accuracy), np.mean(recall_accuracy) # precision, recall
+        precision_mean = np.mean(precision_accuracy)
+        recall_mean = np.mean(recall_accuracy)
+        f1_mean = np.mean(f1_scores)
+        # 95% error bar: 1.95 * std / sqrt(n)
+        precision_error = 1.96 * np.std(precision_accuracy) / np.sqrt(len(precision_accuracy))
+        recall_error = 1.96 * np.std(recall_accuracy) / np.sqrt(len(recall_accuracy))
+        f1_error = 1.96 * np.std(f1_scores) / np.sqrt(len(f1_scores))
+        return precision_mean, recall_mean, f1_mean, precision_error, recall_error, f1_error
 
     def training_step(self, batch, batch_idx):
 
-        loss, acc, precision, recall = self.calc_loss_and_metrics(batch)
+        loss, acc, precision, recall, f1, precision_err, recall_err, f1_err = self.calc_loss_and_metrics(batch)
 
         # need to cast to list of predicted sequences (as list of token ids)   [ [seq1_tok1, seq1_tok2, ...seq1_tokN],..., [seqK_tok1, seqK_tok2, ...seqK_tokZ]]
         # predicted_ids = pred_seq.tolist()
@@ -591,6 +604,42 @@ class Seq2SeqTrainer(pl.LightningModule):
             logger=True,
             sync_dist=True,
         )
+        self.log(
+            "train_f1_acc",
+            f1,
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+            sync_dist=True,
+        )
+        self.log(
+            "train_precision_acc_err",
+            precision_err,
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+            sync_dist=True,
+        )
+        self.log(
+            "train_recall_acc_err",
+            recall_err,
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+            sync_dist=True,
+        )
+        self.log(
+            "train_f1_acc_err",
+            f1_err,
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+            sync_dist=True,
+        )
         # self.log(
         #     "val_bleu_idx",
         #     bleu_score,
@@ -602,13 +651,20 @@ class Seq2SeqTrainer(pl.LightningModule):
         # )
 
         # return loss
-        return {'loss': loss, 'acc': acc, 'precision': precision, 'recall': recall}
+        return {'loss': loss,
+                'acc': acc,
+                'precision': precision,
+                'recall': recall,
+                'f1_score': f1,
+                'precision_err': precision_err,
+                'recall_err': recall_err,
+                'f1_err': f1_err}
 
     def validation_step(self, batch, batch_idx):
         """validation is in eval mode so we do not have to use
         placeholder input tensors
         """
-        loss, acc, precision, recall = self.calc_loss_and_metrics(batch, mode='val')
+        loss, acc, precision, recall, f1, precision_err, recall_err, f1_err = self.calc_loss_and_metrics(batch, mode='val')
 
         # need to cast to list of predicted sequences (as list of token ids)   [ [seq1_tok1, seq1_tok2, ...seq1_tokN],..., [seqK_tok1, seqK_tok2, ...seqK_tokZ]]
         # predicted_ids = pred_seq.tolist()
@@ -659,6 +715,42 @@ class Seq2SeqTrainer(pl.LightningModule):
             logger=True,
             sync_dist=True,
         )
+        self.log(
+            "val_f1_acc",
+            f1,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+            sync_dist=True,
+        )
+        self.log(
+            "val_precision_acc_err",
+            precision_err,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+            sync_dist=True,
+        )
+        self.log(
+            "val_recall_acc_err",
+            recall_err,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+            sync_dist=True,
+        )
+        self.log(
+            "val_f1_acc_err",
+            f1_err,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+            sync_dist=True,
+        )
         # self.log(
         #     "val_bleu_idx",
         #     bleu_score,
@@ -669,13 +761,20 @@ class Seq2SeqTrainer(pl.LightningModule):
         #     sync_dist=True,
         # )
 
-        return loss, acc, precision, recall
+        return {'loss': loss,
+                'acc': acc,
+                'precision': precision,
+                'recall': recall,
+                'f1_score': f1,
+                'precision_err': precision_err,
+                'recall_err': recall_err,
+                'f1_err': f1_err}
 
     def test_step(self, batch, batch_idx):
         """validation is in eval mode so we do not have to use
         placeholder input tensors
         """
-        loss, acc, precision, recall = self.calc_loss_and_metrics(batch, mode='test')
+        loss, acc, precision, recall, f1, precision_err, recall_err, f1_err = self.calc_loss_and_metrics(batch, mode='test')
 
         # need to cast to list of predicted sequences (as list of token ids)   [ [seq1_tok1, seq1_tok2, ...seq1_tokN],..., [seqK_tok1, seqK_tok2, ...seqK_tokZ]]
         # predicted_ids = pred_seq.tolist()
@@ -726,6 +825,42 @@ class Seq2SeqTrainer(pl.LightningModule):
             logger=True,
             sync_dist=True,
         )
+        self.log(
+            "test_f1_acc",
+            f1,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+            sync_dist=True,
+        )
+        self.log(
+            "test_precision_acc_err",
+            precision_err,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+            sync_dist=True,
+        )
+        self.log(
+            "test_recall_acc_err",
+            recall_err,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+            sync_dist=True,
+        )
+        self.log(
+            "test_f1_acc_err",
+            f1_err,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=True,
+            logger=True,
+            sync_dist=True,
+        )
         # self.log(
         #     "test_bleu_idx",
         #     bleu_score,
@@ -736,7 +871,14 @@ class Seq2SeqTrainer(pl.LightningModule):
         #     sync_dist=True,
         # )
 
-        return loss, acc, precision, recall
+        return {'loss': loss,
+                'acc': acc,
+                'precision': precision,
+                'recall': recall,
+                'f1_score': f1,
+                'precision_err': precision_err,
+                'recall_err': recall_err,
+                'f1_err': f1_err}
 
 
 if __name__ == "__main__":
@@ -850,15 +992,23 @@ if __name__ == "__main__":
     lr_monitor = LearningRateMonitor(logging_interval="step")
     from pytorch_lightning.callbacks import ModelCheckpoint
 
-    # saves top-K checkpoints based on "val_loss" metric
+    # # saves top-K checkpoints based on "val_loss" metric
+    # best_checkpoint = ModelCheckpoint(
+    #     save_top_k=1,
+    #     monitor="val_loss",
+    #     mode="min",
+    #     # dirpath="my/path/",
+    #     filename="best-{epoch:02d}-{val_loss:.2f}",
+    # )
+
+    # saves top-K checkpoints based on "val_f1_acc" metric
     best_checkpoint = ModelCheckpoint(
         save_top_k=1,
-        monitor="val_loss",
-        mode="min",
+        monitor="val_f1_acc",
+        mode="max",
         # dirpath="my/path/",
-        filename="best-{epoch:02d}-{val_loss:.2f}",
+        filename="best-{epoch:02d}-{val_f1_acc:.2f}",
     )
-
     # saves last-K checkpoints based on "global_step" metric
     # make sure you log it inside your LightningModule
     last_checkpoint = ModelCheckpoint(
@@ -891,6 +1041,8 @@ if __name__ == "__main__":
     dm.setup('test')
     print(f"Testing with the best checkpoint: {trainer.checkpoint_callback.best_model_path}")
     trainer.test(model, ckpt_path='best', datamodule=dm)
+    print(f"Testing with the last checkpoint (notice the Loaded model weights from path below):")
+    trainer.test(model, ckpt_path='last', datamodule=dm)
 
 # sample cmd
 

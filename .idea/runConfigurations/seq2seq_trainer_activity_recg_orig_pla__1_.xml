@@ -14,7 +14,7 @@
     <option name="ADD_SOURCE_ROOTS" value="true" />
     <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
     <option name="SCRIPT_NAME" value="$PROJECT_DIR$/seq2seq_trainer_activity_recg.py" />
-    <option name="PARAMETERS" value="--gpus &quot;0,&quot; --batch_size 512 --train_data_path data/240712_Experimenal_Data/varying_all_noise/ar-training-data_00000000_10000.txt --max_epochs 100 --N_valid_size 0.2 --exclude_eos 1 --use_pred_eos 0 --use_pla 1 --teacher_forcing_ratio 0 --use_base_model 0 --use_max_seq_len 1 --same_vocab_in_out 0 --log_dir train/pla/~eos_~predeos_maxseqlen --output_file pred_probs.csv" />
+    <option name="PARAMETERS" value="--gpus &quot;0,&quot; --batch_size 512 --train_data_path data/240712_Experimenal_Data/varying_all_noise/ar-training-data_75757575_10000.txt --max_epochs 100 --N_valid_size 0.2 --exclude_eos 1 --use_pred_eos 0 --use_pla 1 --teacher_forcing_ratio 0 --use_base_model 0 --use_max_seq_len 0 --same_vocab_in_out 0 --log_dir train/debug --output_file pred_probs.csv --resume_checkpoint /home/srikanth/Projects/active_data/Activity_Recognition_Experiments/seq2seq-attention-pytorch-lightning/train/debug/pla_peakyrecall/ar-training-data_75757575_10000/csv_logs/version_0/checkpoints/epoch=69-step=15330.ckpt" />
     <option name="SHOW_COMMAND_LINE" value="false" />
     <option name="EMULATE_TERMINAL" value="false" />
     <option name="MODULE_MODE" value="false" />
