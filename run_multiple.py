@@ -83,7 +83,7 @@ if __name__ == "__main__":
     if sum(result) != 0:
         failed_runs = [commands_to_run[i] for i in range(len(result)) if result[i]]
         print("\nFollowing runs failed!\n")
-        print(failed_runs)
+        [print(f"{run}\n") for run in failed_runs]
         print(f"\nNumber of failed runs: {len(failed_runs)}\n Saving list to train/failed_runs.pkl")
         with open(Path(args.base_folder, 'failed_runs.pkl'), 'wb') as file:
             pickle.dump(failed_runs, file)
