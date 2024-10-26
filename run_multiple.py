@@ -24,7 +24,7 @@ if __name__ == "__main__":
     parser.add_argument("--resume_checkpoint", action='store_true', help='loads the latest checkpoint')
     args = parser.parse_args()
 
-    exp_name = os.path.basename(args.data_dir)
+    exp_name = Path(args.data_dir).name
     os.makedirs(args.base_folder, exist_ok=True)
     model_names = ['no_pla', 'pla', 'base_model']
     # model_names = [model_names[-1]]
