@@ -10,8 +10,8 @@
     <option name="ADD_CONTENT_ROOTS" value="true" />
     <option name="ADD_SOURCE_ROOTS" value="true" />
     <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
-    <option name="SCRIPT_NAME" value="$PROJECT_DIR$/plot_results.py" />
-    <option name="PARAMETERS" value="--data_dir data/240712_Experimenal_Data/varying_all_noise" />
+    <option name="SCRIPT_NAME" value="$PROJECT_DIR$/plot_results_2vars.py" />
+    <option name="PARAMETERS" value="--data_dir data/240913_Experimental_Data/varying_all_noise_and_size --ckpt_to_use best" />
     <option name="SHOW_COMMAND_LINE" value="true" />
     <option name="EMULATE_TERMINAL" value="false" />
     <option name="MODULE_MODE" value="false" />

@@ -45,9 +45,13 @@ if __name__ == "__main__":
     training_files = training_files[:6] if args.debug else training_files
 
     if args.cmds_to_run_file:
-        assert os.path.isfile(args.cmds_to_run_file), "Unable to open provided cmds_to_run file"
-        with open(args.cmds_to_run_file, 'rb') as f:
-            commands_to_run = pickle.load(f)
+        file = Path(args.cmds_to_run_file).expanduser()
+        assert file.is_file(), "Unable to open provided cmds_to_run file"
+        if 'txt' in file.suffix:
+            commands_to_run = [cmd for cmd in open(file).readlines() if not cmd.isspace()]
+        else: # pickle file
+            with open(args.cmds_to_run_file, 'rb') as f:
+                commands_to_run = pickle.load(f)
     else:
         commands_to_run = []
         for file in sorted(training_files):

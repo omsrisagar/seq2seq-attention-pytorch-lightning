@@ -21,7 +21,7 @@ if __name__ == "__main__":
     parser.add_argument("--base_folder", type=str, default="train", help="path to the root training folder where pla no_pla and bm train results are stored")
     parser.add_argument("--ckpt_to_use", type=str, default="best", help="best or last checkpoint to use")
     parser.add_argument("--last_epoch", type=int, default=70, help="Used for assertion - to make sure training ran this many epochs")
-    parser.add_argument("--write_results", type=int, default=1, help="Whether to write results to csv file.")
+    parser.add_argument("--write_results", type=int, default=1, help="Whether to write results to excel file.")
     # parser.add_argument("--debug", action='store_true', help='adds --debug flag to runs')
     args = parser.parse_args()
 
