@@ -971,7 +971,7 @@ if __name__ == "__main__":
     # # with redirect_stdout(log_fh):
     # #     dm.prepare_data()
 
-    # this will be run twice; once by us to keep vocab dim to be passed to model and once by trainer itself.
+    # this will be run twice; once by us to get vocab dim to be passed to model and once by trainer itself.
     dm.setup("fit")
 
     # to see results run in console
@@ -1043,6 +1043,9 @@ if __name__ == "__main__":
     trainer.test(model, ckpt_path='best', datamodule=dm)
     print(f"Testing with the last checkpoint (notice the Loaded model weights from path below):")
     trainer.test(model, ckpt_path='last', datamodule=dm)
+    # For debugging:
+    # print(f"Testing with the provided checkpoint: ")
+    # trainer.test(model, datamodule=dm)
 
 # sample cmd
 
