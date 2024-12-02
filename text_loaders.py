@@ -132,6 +132,7 @@ class ActivityRecDataModule(pl.LightningDataModule):
         self.use_max_seq_len = use_max_seq_len
         self.same_vocab_in_out = same_vocab_in_out
         self.max_seq_len_out = None
+        self.max_seq_len_in = None
         self.debug_mode = debug_mode
 
 
@@ -157,16 +158,18 @@ class ActivityRecDataModule(pl.LightningDataModule):
     def gen_sequences(self, filename, stage='test', test_filename=None):
         """generates input and output sequences from file
         """
-        input_vocab, output_vocab, pairs = self.read_file(filename)
+        input_vocab, output_vocab, pairs = self.read_file(filename) # just reads pairs and creates blank Vocab objects
         if stage == 'fit':
             _, _, test_pairs = self.read_file(test_filename)
             logging.info(f"Counting words from {filename} and {test_filename}...")
             for pair in pairs + test_pairs:
+                # splits sequence, removes duplicates, adds words to vocab and updates max sequence length for each seq.
                 output_vocab.addSequence(pair[1], mode='output') # first do the output, so we can get max_seq_len for output in case we use
                 # same vocab for both input and output
             self.max_seq_len_out = output_vocab.max_seq_len
             for pair in pairs + test_pairs:
                 input_vocab.addSequence(pair[0])
+            self.max_seq_len_in = input_vocab.max_seq_len
             logging.info("Counted following words and max_seq_len for each Vocab")
             logging.info(f"{input_vocab.name}: {input_vocab.n_words}, {input_vocab.max_seq_len}")
             logging.info(f"{output_vocab.name}: {output_vocab.n_words}, {output_vocab.max_seq_len}")
@@ -228,8 +231,6 @@ class ActivityRecDataModule(pl.LightningDataModule):
         # self.test_dataset = self.gen_tensors(val_pairs, self.input_vocab, self.output_vocab)
         if stage == 'fit':
             self.input_vocab, self.output_vocab, train_pairs = self.gen_sequences(self.train_filename, stage, self.test_filename) # input and output vocab are same objects
-            if self.debug_mode:
-                train_pairs = train_pairs[:100]
             logging.info("Example train pair: raw and tensor formats")
             logging.info(random.choice(train_pairs))
             tensor_train_pairs = self.gen_tensors(train_pairs)
@@ -239,8 +240,6 @@ class ActivityRecDataModule(pl.LightningDataModule):
 
         if stage == 'test':
             _, _, test_pairs = self.gen_sequences(self.test_filename)
-            if self.debug_mode:
-                test_pairs = test_pairs[:100]
             logging.info("Example test pair: raw and tensor formats")
             logging.info(random.choice(test_pairs))
             tensor_test_pairs = self.gen_tensors(test_pairs)

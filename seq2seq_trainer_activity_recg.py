@@ -25,6 +25,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
+from transformer import Transformer
 
 import pytorch_lightning as pl
 from torchmetrics.classification.accuracy import Accuracy
@@ -48,6 +49,11 @@ class Seq2SeqTrainer(pl.LightningModule):
         parser.add_argument("--emb_dim", type=int, default=32)
         parser.add_argument("--hidden_dim", type=int, default=64)
         parser.add_argument("--dropout", type=float, default=0.1)
+        # Transformer specific arguments
+        parser.add_argument("--num_heads", type=int, default=8, help="Number of heads in multi-head attn; embedding dim will be split across this")
+        parser.add_argument("--num_layers", type=int, default=6, help="Number of layers in encoder and decoder of transformer")
+        parser.add_argument("--d_ff", type=int, default=2048, help="Feed forward upwards projection size")
+
         return parser
 
     def __init__(
@@ -64,6 +70,7 @@ class Seq2SeqTrainer(pl.LightningModule):
         use_pred_eos=True, # if True, tokens till EOS is predicted are taken as output, else till ground truth EOS
         use_pla=True, # whether to include orderless PLA for reordering targets; if False default order of tgts is used
         use_base_model=False,
+        use_transformer=False,
         use_max_seq_len=False, # whether to use max. sequence len for predicting
         **kwargs,
     ) -> None:
@@ -88,6 +95,11 @@ class Seq2SeqTrainer(pl.LightningModule):
         self.use_pla = use_pla
 
         self.use_base_model = use_base_model
+        self.use_transformer = use_transformer
+        self.num_layers = kwargs["num_layers"]
+        self.num_heads = kwargs["num_heads"]
+        self.d_ff = kwargs["d_ff"]
+        self.max_seq_len = kwargs["max_seq_len"]
         self.use_max_seq_len = use_max_seq_len
 
         self.pad_idx = padding_index
@@ -121,25 +133,31 @@ class Seq2SeqTrainer(pl.LightningModule):
             # self._loss = nn.CrossEntropyLoss(ignore_index=self.pad_idx)
             self._loss = nn.CrossEntropyLoss()
 
-        self.attention = encdec.Attention(self.enc_hid_dim, self.dec_hid_dim)
+        if self.use_transformer:
+            self.transformer = Transformer(self.input_dim, self.output_dim, self.enc_emb_dim,
+                                           self.num_heads, self.num_layers, self.d_ff,
+                                           self.max_seq_len, self.enc_dropout)
+        else:
 
-        #    INPUT_DIM, ENC_EMB_DIM, ENC_HID_DIM, DEC_HID_DIM, ENC_DROPOUT
-        self.encoder = encdec.Encoder(
-            self.input_dim,
-            self.enc_emb_dim,
-            self.enc_hid_dim,
-            self.dec_hid_dim,
-            self.enc_dropout,
-        )
+            self.attention = encdec.Attention(self.enc_hid_dim, self.dec_hid_dim)
 
-        self.decoder = encdec.Decoder(
-            self.output_dim,  # OUTPUT_DIM,
-            self.dec_emb_dim,  # DEC_EMB_DIM,
-            self.enc_hid_dim,  # ENC_HID_DIM,
-            self.dec_hid_dim,  # DEC_HID_DIM,
-            self.dec_dropout,  # DEC_DROPOUT,
-            self.attention,
-        )
+            #    INPUT_DIM, ENC_EMB_DIM, ENC_HID_DIM, DEC_HID_DIM, ENC_DROPOUT
+            self.encoder = encdec.Encoder(
+                self.input_dim,
+                self.enc_emb_dim,
+                self.enc_hid_dim,
+                self.dec_hid_dim,
+                self.enc_dropout,
+            )
+
+            self.decoder = encdec.Decoder(
+                self.output_dim,  # OUTPUT_DIM,
+                self.dec_emb_dim,  # DEC_EMB_DIM,
+                self.enc_hid_dim,  # ENC_HID_DIM,
+                self.dec_hid_dim,  # DEC_HID_DIM,
+                self.dec_dropout,  # DEC_DROPOUT,
+                self.attention,
+            )
 
         self._init_weights()
 
@@ -162,6 +180,9 @@ class Seq2SeqTrainer(pl.LightningModule):
         # trg = [trg len, batch size]
         # teacher_forcing_ratio is probability to use teacher forcing
         # e.g. if teacher_forcing_ratio is 0.75 we use teacher forcing 75% of the time
+
+        if self.use_transformer: #do the transpose again as we need batch data first
+            return self.transformer(src.transpose(0, 1), trg.transpose(0, 1)[:, :-1])
 
         batch_size = src.shape[1]
         trg_len = trg.shape[0]
@@ -299,8 +320,11 @@ class Seq2SeqTrainer(pl.LightningModule):
         else:
             # do not know if this is a problem, loss will be computed with sos token
 
-            # without zeros at the beginning i.e.,indx=0 (note that output is initially all zeros and updated only index=1 onwards)
-            logits = outputs[1:].transpose(0, 1)
+            if self.use_transformer:
+                logits = outputs
+            else:
+                # without zeros at the beginning i.e.,indx=0 (note that output is initially all zeros and updated only index=1 onwards)
+                logits = outputs[1:].transpose(0, 1)
 
             # without sos at the beginning (as this is the ground truth seq. we append sos ourselves in the beginning)
             trg = trg_seq[1:].transpose(0, 1)
@@ -881,8 +905,7 @@ class Seq2SeqTrainer(pl.LightningModule):
                 'f1_err': f1_err}
 
 
-if __name__ == "__main__":
-
+def main():
     torch.autograd.set_detect_anomaly(True)
 
     # look to .vscode/launch.json file - there are set some args
@@ -898,6 +921,7 @@ if __name__ == "__main__":
     parser.add_argument("--use_pred_eos", type=int, default=1, help="Whether to use predicted EOS as the last token")
     parser.add_argument("--use_pla", type=int, default=1, help="Whether to use PLA for orderless learning")
     parser.add_argument("--use_base_model", type=int, default=0, help="Whether to use multi-label classification instead of sequence model")
+    parser.add_argument("--use_transformer", type=int, default=0, help="Whether to use transformer instead of LSTM model")
     parser.add_argument("--use_max_seq_len", type=int, default=0, help="Whether to use maximum possible sequence length for output prediction")
     parser.add_argument("--same_vocab_in_out", type=int, default=1, help="Whether to use same vocab for both input and output tokens")
     parser.add_argument("--train_data_path", type=str, default="./data/ar-training-data_050505_100.txt")
@@ -981,7 +1005,12 @@ if __name__ == "__main__":
     # log_desc = f"RNN with attention model vocab_size={dm.vocab_size} data_size={dm.dims}, emb_dim={args.emb_dim} hidden_dim={args.hidden_dim}"
     input_dim = dm.input_vocab.n_words
     output_dim = dm.output_vocab.n_words
-    log_desc = f"RNN with attention model input vocab_size={input_dim} output vocab siz={output_dim} emb_dim={args.emb_dim} hidden_dim={args.hidden_dim}"
+    max_seq_len = max(dm.max_seq_len_in, dm.max_seq_len_out) + 2 # for sos and eos
+    if args.use_transformer:
+        model_desc = f'Transformer model with max_seq_len={max_seq_len})'
+    else:
+        model_desc = 'RNN with attention model with '
+    log_desc = f"{model_desc} input vocab_size={input_dim} output vocab siz={output_dim} emb_dim={args.emb_dim}"
     logging.info(log_desc)
 
     tb_logger = TensorBoardLogger(logdir, name="pl_tensorboard_logs", comment=log_desc )
@@ -1024,7 +1053,8 @@ if __name__ == "__main__":
 
     model_args = vars(args)
     logging.info(pp.PrettyPrinter().pprint(model_args))
-    model = Seq2SeqTrainer(input_vocab_size=input_dim, output_vocab_size=output_dim, padding_index=tl.PAD_token, **model_args)
+    model = Seq2SeqTrainer(input_vocab_size=input_dim, output_vocab_size=output_dim, padding_index=tl.PAD_token,
+                           max_seq_len=max_seq_len, **model_args)
 
     if args.resume_checkpoint:
         model = model.load_from_checkpoint(args.resume_checkpoint)
@@ -1057,3 +1087,5 @@ if __name__ == "__main__":
 
 # tensorboard dev --logdir model_corrector/pl_tensorboard_logs/version??
 
+if __name__ == "__main__":
+    main()

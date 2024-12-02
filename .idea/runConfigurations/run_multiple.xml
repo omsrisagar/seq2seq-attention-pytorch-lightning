@@ -14,7 +14,7 @@
     <option name="ADD_SOURCE_ROOTS" value="true" />
     <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
     <option name="SCRIPT_NAME" value="$PROJECT_DIR$/run_multiple.py" />
-    <option name="PARAMETERS" value="--data_dir data/240712_Experimental_Data/varying_seeddev/ --cmds_to_run_file &quot;&quot; --num_workers 15" />
+    <option name="PARAMETERS" value="--data_dir data/240712_Experimental_Data/varying_seeddev/ --cmds_to_run_file ~/Downloads/Temp/failed_runs.txt --num_workers 15" />
     <option name="SHOW_COMMAND_LINE" value="true" />
     <option name="EMULATE_TERMINAL" value="false" />
     <option name="MODULE_MODE" value="false" />
