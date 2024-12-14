@@ -26,7 +26,7 @@ if __name__ == "__main__":
 
     exp_name = Path(args.data_dir).name
     os.makedirs(args.base_folder, exist_ok=True)
-    model_names = ['no_pla', 'pla', 'base_model']
+    model_names = ['no_pla', 'pla', 'base_model', 'transformer']
     # model_names = [model_names[-1]]
 
     # Regular Seq2Seq model
@@ -38,7 +38,10 @@ if __name__ == "__main__":
     # # Multi-label classification (base model)
     bm_base_cmd = f"python seq2seq_trainer_activity_recg.py --gpus {args.gpus} --batch_size {args.batch_size} --max_epochs {args.max_epochs} --N_valid_size 0.2 --exclude_eos 1 --use_pred_eos 0 --use_pla 0 --teacher_forcing_ratio 0 --use_base_model 1 --same_vocab_in_out 0"
 
-    base_cmds = [nopla_base_cmd, pla_base_cmd, bm_base_cmd]
+    # Transformer model
+    xfrmr_base_cmd = f"python seq2seq_trainer_activity_recg.py --gpus {args.gpus} --batch_size {args.batch_size} --max_epochs {args.max_epochs} --N_valid_size 0.2 --exclude_eos 1 --use_pred_eos 0 --use_pla 0 --use_transformer 1 --use_base_model 0 --use_max_seq_len 0 --same_vocab_in_out 0 --num_layers 1 --num_heads 8"
+
+    base_cmds = [nopla_base_cmd, pla_base_cmd, bm_base_cmd, xfrmr_base_cmd]
     # base_cmds = [base_cmds[-1]]
 
     training_files = glob.glob(os.path.join(args.data_dir, "ar-training-*"))
