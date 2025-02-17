@@ -96,9 +96,10 @@ class Seq2SeqTrainer(pl.LightningModule):
 
         self.use_base_model = use_base_model
         self.use_transformer = use_transformer
+        self.transformer_enc_only = kwargs["transformer_enc_only"]
         self.num_layers = kwargs["num_layers"]
         self.num_heads = kwargs["num_heads"]
-        self.d_ff = kwargs["d_ff"]
+        self.d_ff = kwargs["d_ff"] # transformer hidden dimension
         self.max_seq_len = kwargs["max_seq_len"]
         self.use_max_seq_len = use_max_seq_len
 
@@ -106,7 +107,7 @@ class Seq2SeqTrainer(pl.LightningModule):
 
         self.output_file = output_file
 
-        self.save_hyperparameters()
+        self.save_hyperparameters() # built-in pytorch lightning fucntion
 
         self.max_epochs = kwargs["max_epochs"]
 
@@ -136,7 +137,7 @@ class Seq2SeqTrainer(pl.LightningModule):
         if self.use_transformer:
             self.transformer = Transformer(self.input_dim, self.output_dim, self.enc_emb_dim,
                                            self.num_heads, self.num_layers, self.d_ff,
-                                           self.max_seq_len, self.enc_dropout)
+                                           self.max_seq_len, self.enc_dropout, self.transformer_enc_only)
         else:
 
             self.attention = encdec.Attention(self.enc_hid_dim, self.dec_hid_dim)
@@ -922,6 +923,7 @@ def main():
     parser.add_argument("--use_pla", type=int, default=1, help="Whether to use PLA for orderless learning")
     parser.add_argument("--use_base_model", type=int, default=0, help="Whether to use multi-label classification instead of sequence model")
     parser.add_argument("--use_transformer", type=int, default=0, help="Whether to use transformer instead of LSTM model")
+    parser.add_argument("--transformer_enc_only", type=int, default=0, help="Whether to use transformer encoder only; uses multi-label decoder")
     parser.add_argument("--use_max_seq_len", type=int, default=0, help="Whether to use maximum possible sequence length for output prediction")
     parser.add_argument("--same_vocab_in_out", type=int, default=1, help="Whether to use same vocab for both input and output tokens")
     parser.add_argument("--train_data_path", type=str, default="./data/ar-training-data_050505_100.txt")
@@ -1005,12 +1007,12 @@ def main():
     # log_desc = f"RNN with attention model vocab_size={dm.vocab_size} data_size={dm.dims}, emb_dim={args.emb_dim} hidden_dim={args.hidden_dim}"
     input_dim = dm.input_vocab.n_words
     output_dim = dm.output_vocab.n_words
-    max_seq_len = max(dm.max_seq_len_in, dm.max_seq_len_out) + 2 # for sos and eos
+    max_seq_len = max(dm.max_seq_len_in, dm.max_seq_len_out) + 2 # for sos and eos. This length is needed for xfrmr
     if args.use_transformer:
         model_desc = f'Transformer model with max_seq_len={max_seq_len})'
     else:
         model_desc = 'RNN with attention model with '
-    log_desc = f"{model_desc} input vocab_size={input_dim} output vocab siz={output_dim} emb_dim={args.emb_dim}"
+    log_desc = f"{model_desc} input vocab_size={input_dim} output vocab size={output_dim} emb_dim={args.emb_dim}"
     logging.info(log_desc)
 
     tb_logger = TensorBoardLogger(logdir, name="pl_tensorboard_logs", comment=log_desc )

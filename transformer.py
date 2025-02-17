@@ -117,8 +117,9 @@ class DecoderLayer(nn.Module):
         return x
 
 class Transformer(nn.Module):
-    def __init__(self, src_vocab_size, tgt_vocab_size, d_model, num_heads, num_layers, d_ff, max_seq_length, dropout):
+    def __init__(self, src_vocab_size, tgt_vocab_size, d_model, num_heads, num_layers, d_ff, max_seq_length, dropout, enc_only=False):
         super(Transformer, self).__init__()
+        self.enc_only = enc_only
         self.encoder_embedding = nn.Embedding(src_vocab_size, d_model)
         self.decoder_embedding = nn.Embedding(tgt_vocab_size, d_model)
         self.positional_encoding = PositionalEncoding(d_model, max_seq_length)
@@ -127,6 +128,7 @@ class Transformer(nn.Module):
         self.decoder_layers = nn.ModuleList([DecoderLayer(d_model, num_heads, d_ff, dropout) for _ in range(num_layers)])
 
         self.fc = nn.Linear(d_model, tgt_vocab_size)
+        self.fc_enc = nn.Linear(d_model, d_model) # used in case of encoder only
         self.dropout = nn.Dropout(dropout)
 
     def generate_mask(self, src, tgt):
@@ -146,9 +148,14 @@ class Transformer(nn.Module):
         for enc_layer in self.encoder_layers:
             enc_output = enc_layer(enc_output, src_mask)
 
-        dec_output = tgt_embedded
-        for dec_layer in self.decoder_layers:
-            dec_output = dec_layer(dec_output, enc_output, src_mask, tgt_mask)
+        if self.enc_only:
+            enc_output = self.fc_enc(enc_output)
+            enc_output_true = src_mask.squeeze().unsqueeze(2) * enc_output
+            dec_output = enc_output_true.sum(dim=1)
+        else:
+            dec_output = tgt_embedded
+            for dec_layer in self.decoder_layers:
+                dec_output = dec_layer(dec_output, enc_output, src_mask, tgt_mask)
 
         output = self.fc(dec_output)
         return output
