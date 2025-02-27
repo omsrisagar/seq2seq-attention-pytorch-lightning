@@ -14,6 +14,7 @@ import torch.utils.data as data
 import math
 import copy
 import pytorch_lightning as pl
+from transformers import TimeSeriesTransformerModel, TimeSeriesTransformerConfig
 
 class MultiHeadAttention(nn.Module):
     def __init__(self, d_model, num_heads):
@@ -117,15 +118,36 @@ class DecoderLayer(nn.Module):
         return x
 
 class Transformer(nn.Module):
-    def __init__(self, src_vocab_size, tgt_vocab_size, d_model, num_heads, num_layers, d_ff, max_seq_length, dropout, enc_only=False):
+    def __init__(self, src_vocab_size, tgt_vocab_size, d_model, num_heads, num_layers, d_ff,
+                 max_seq_length, dropout, enc_only=False, use_hf=False):
         super(Transformer, self).__init__()
+        self.d_model = d_model
         self.enc_only = enc_only
+        self.use_hf = use_hf #hugging face
         self.encoder_embedding = nn.Embedding(src_vocab_size, d_model)
         self.decoder_embedding = nn.Embedding(tgt_vocab_size, d_model)
         self.positional_encoding = PositionalEncoding(d_model, max_seq_length)
 
-        self.encoder_layers = nn.ModuleList([EncoderLayer(d_model, num_heads, d_ff, dropout) for _ in range(num_layers)])
-        self.decoder_layers = nn.ModuleList([DecoderLayer(d_model, num_heads, d_ff, dropout) for _ in range(num_layers)])
+        if self.use_hf:
+            config = TimeSeriesTransformerConfig(
+                prediction_length=max_seq_length,
+                lags_sequence=[0],
+                d_model=d_model,
+                input_size=d_model,
+                num_time_features=d_model,
+                encoder_layers=num_layers,
+                encoder_attention_heads=num_heads,
+                encoder_ff_dim=d_ff,
+                activation_function='relu',
+                dropout=dropout,
+                encoder_layerdrop=dropout,
+                attention_dropout=0,
+                activation_dropout=0,
+            )
+            self.hf_model = TimeSeriesTransformerModel(config=config)
+        else:
+            self.encoder_layers = nn.ModuleList([EncoderLayer(d_model, num_heads, d_ff, dropout) for _ in range(num_layers)])
+            self.decoder_layers = nn.ModuleList([DecoderLayer(d_model, num_heads, d_ff, dropout) for _ in range(num_layers)])
 
         self.fc = nn.Linear(d_model, tgt_vocab_size)
         self.fc_enc = nn.Linear(d_model, d_model) # used in case of encoder only
@@ -133,26 +155,37 @@ class Transformer(nn.Module):
 
     def generate_mask(self, src, tgt):
         src_mask = (src != 0).unsqueeze(1).unsqueeze(2)
+        src_mask2 = (src != 0).unsqueeze(2)
         tgt_mask = (tgt != 0).unsqueeze(1).unsqueeze(3)
         seq_length = tgt.size(1)
         nopeak_mask = (1 - torch.triu(torch.ones((1, seq_length, seq_length), device=src.device), diagonal=1)).bool() # lower triangular matrix
         tgt_mask = tgt_mask & nopeak_mask
-        return src_mask, tgt_mask
+        return src_mask, tgt_mask, src_mask2
 
     def forward(self, src, tgt):
-        src_mask, tgt_mask = self.generate_mask(src, tgt)
-        src_embedded = self.dropout(self.positional_encoding(self.encoder_embedding(src)))
-        tgt_embedded = self.dropout(self.positional_encoding(self.decoder_embedding(tgt)))
+        src_mask, tgt_mask, src_mask2 = self.generate_mask(src, tgt)
 
-        enc_output = src_embedded
-        for enc_layer in self.encoder_layers:
-            enc_output = enc_layer(enc_output, src_mask)
+        if self.use_hf:
+            enc_output = self.hf_model(
+                past_values=self.encoder_embedding(src),
+                past_time_features=self.positional_encoding.pe.repeat(src.shape[0], 1, 1),
+                past_observed_mask=src_mask2.repeat(1, 1, self.d_model),
+                # inputs_embeds=self.encoder_embedding(src), # seems like it is present in online documentation but not in code
+                output_hidden_states=False # gets only hidden states of last layer (of all timesteps) - this is enough for this proj.
+            )
+            enc_output = enc_output.encoder_last_hidden_state
+        else:
+            src_embedded = self.dropout(self.positional_encoding(self.encoder_embedding(src)))
+            enc_output = src_embedded
+            for enc_layer in self.encoder_layers:
+                enc_output = enc_layer(enc_output, src_mask)
 
         if self.enc_only:
             enc_output = self.fc_enc(enc_output)
-            enc_output_true = src_mask.squeeze().unsqueeze(2) * enc_output
+            enc_output_true = src_mask2 * enc_output
             dec_output = enc_output_true.sum(dim=1)
         else:
+            tgt_embedded = self.dropout(self.positional_encoding(self.decoder_embedding(tgt)))
             dec_output = tgt_embedded
             for dec_layer in self.decoder_layers:
                 dec_output = dec_layer(dec_output, enc_output, src_mask, tgt_mask)

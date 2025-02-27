@@ -72,13 +72,13 @@ class Vocab:
             self.word2count[word] += 1
 
 class SequenceDataset(Dataset):
-    def __init__(self, pairs, use_max_seq_len=False, transform=None):
+    def __init__(self, pairs, use_max_seq_len=False, use_hf=False, transform=None):
         self.pairs = pairs
         # Sanity check
         for pair in self.pairs:
             assert pair[0][0].data == SOS_token # start index should be SOS
             assert pair[1][0].data == SOS_token # same
-            if use_max_seq_len:
+            if use_max_seq_len or use_hf:
                 assert pair[0][-1].data == EOS_token or pair[0][-1].data == PAD_token  # end index needs to be EOS or PAD
                 assert pair[1][-1].data == EOS_token or pair[1][-1].data == PAD_token  # same
             else:
@@ -120,7 +120,7 @@ class ActivityRecDataModule(pl.LightningDataModule):
 
     def __init__(
             self, batch_size=4, N_valid_size=200, num_workers=1, use_max_seq_len=False,
-            same_vocab_in_out=True, train_filename=None, test_filename=None, debug_mode=False
+            same_vocab_in_out=True, use_hf=False, train_filename=None, test_filename=None, debug_mode=False
     ):
         super().__init__()
 
@@ -131,6 +131,7 @@ class ActivityRecDataModule(pl.LightningDataModule):
         self.num_workers = num_workers
         self.use_max_seq_len = use_max_seq_len
         self.same_vocab_in_out = same_vocab_in_out
+        self.use_hf = use_hf # huggingface xfrmr
         self.max_seq_len_out = None
         self.max_seq_len_in = None
         self.debug_mode = debug_mode
@@ -190,6 +191,9 @@ class ActivityRecDataModule(pl.LightningDataModule):
         if mode == 'output' and self.use_max_seq_len: # pad with PAD_token till max_seq_len + 2
             diff_len = self.max_seq_len_out + 2 - len(indexes)
             indexes.extend([PAD_token for _ in range(diff_len)])
+        if mode == 'input' and self.use_hf: # pad with PAD_token till max input sequence len
+            diff_len = self.max_seq_len_in + 2 - len(indexes)
+            indexes.extend([PAD_token for _ in range(diff_len)])
         return torch.tensor(indexes, dtype=torch.long)
 
     def tensors_from_pair(self, pair, input_vocab, output_vocab):
@@ -235,7 +239,7 @@ class ActivityRecDataModule(pl.LightningDataModule):
             logging.info(random.choice(train_pairs))
             tensor_train_pairs = self.gen_tensors(train_pairs)
             logging.info(random.choice(tensor_train_pairs))
-            train_dataset = SequenceDataset(tensor_train_pairs, use_max_seq_len=self.use_max_seq_len)
+            train_dataset = SequenceDataset(tensor_train_pairs, use_max_seq_len=self.use_max_seq_len, use_hf=self.use_hf)
             self.train_data, self.val_data = random_split(train_dataset, [1-self.N_valid_size, self.N_valid_size])
 
         if stage == 'test':
@@ -244,7 +248,7 @@ class ActivityRecDataModule(pl.LightningDataModule):
             logging.info(random.choice(test_pairs))
             tensor_test_pairs = self.gen_tensors(test_pairs)
             logging.info(random.choice(tensor_test_pairs))
-            self.test_data = SequenceDataset(tensor_test_pairs, use_max_seq_len=self.use_max_seq_len)
+            self.test_data = SequenceDataset(tensor_test_pairs, use_max_seq_len=self.use_max_seq_len, use_hf=self.use_hf)
 
     def __collate_fn(self, sample: list, prepare_target=True):
         """

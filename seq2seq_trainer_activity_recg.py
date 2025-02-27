@@ -97,6 +97,7 @@ class Seq2SeqTrainer(pl.LightningModule):
         self.use_base_model = use_base_model
         self.use_transformer = use_transformer
         self.transformer_enc_only = kwargs["transformer_enc_only"]
+        self.use_hf = kwargs["use_huggingface"]
         self.num_layers = kwargs["num_layers"]
         self.num_heads = kwargs["num_heads"]
         self.d_ff = kwargs["d_ff"] # transformer hidden dimension
@@ -137,7 +138,8 @@ class Seq2SeqTrainer(pl.LightningModule):
         if self.use_transformer:
             self.transformer = Transformer(self.input_dim, self.output_dim, self.enc_emb_dim,
                                            self.num_heads, self.num_layers, self.d_ff,
-                                           self.max_seq_len, self.enc_dropout, self.transformer_enc_only)
+                                           self.max_seq_len, self.enc_dropout, self.transformer_enc_only,
+                                           use_hf=self.use_hf)
         else:
 
             self.attention = encdec.Attention(self.enc_hid_dim, self.dec_hid_dim)
@@ -924,6 +926,7 @@ def main():
     parser.add_argument("--use_base_model", type=int, default=0, help="Whether to use multi-label classification instead of sequence model")
     parser.add_argument("--use_transformer", type=int, default=0, help="Whether to use transformer instead of LSTM model")
     parser.add_argument("--transformer_enc_only", type=int, default=0, help="Whether to use transformer encoder only; uses multi-label decoder")
+    parser.add_argument("--use_huggingface", type=int, default=0, help="Whether to use hugging face library for time series transformer model")
     parser.add_argument("--use_max_seq_len", type=int, default=0, help="Whether to use maximum possible sequence length for output prediction")
     parser.add_argument("--same_vocab_in_out", type=int, default=1, help="Whether to use same vocab for both input and output tokens")
     parser.add_argument("--train_data_path", type=str, default="./data/ar-training-data_050505_100.txt")
@@ -981,6 +984,7 @@ def main():
         num_workers=args.num_workers,
         use_max_seq_len=args.use_max_seq_len,
         same_vocab_in_out=args.same_vocab_in_out,
+        use_hf=args.use_huggingface, # to have all input sequences padded to max input seq. len
         train_filename=args.train_data_path,
         test_filename=args.test_data_path,
         debug_mode=args.debug
