@@ -26,7 +26,7 @@ if __name__ == "__main__":
 
     exp_name = Path(args.data_dir).name
     os.makedirs(args.base_folder, exist_ok=True)
-    model_names = ['no_pla', 'pla', 'base_model', 'transformer', 'transformer_enc']
+    model_names = ['no_pla', 'pla', 'base_model', 'transformer', 'transformer_enc', 'transformer_hf_enc']
     model_names = [model_names[-1]]
 
     # Regular Seq2Seq model
@@ -44,7 +44,10 @@ if __name__ == "__main__":
     # Transformer Encoder + Multi-label decoder model
     xfrmr_enc_base_cmd = f"python seq2seq_trainer_activity_recg.py --gpus {args.gpus} --batch_size {args.batch_size} --max_epochs {args.max_epochs} --N_valid_size 0.2 --exclude_eos 1 --use_pred_eos 0 --use_pla 0 --use_transformer 1 --transformer_enc_only 1 --use_base_model 1 --use_max_seq_len 0 --same_vocab_in_out 0 --num_layers 1 --num_heads 8"
 
-    base_cmds = [nopla_base_cmd, pla_base_cmd, bm_base_cmd, xfrmr_base_cmd, xfrmr_enc_base_cmd]
+    # HuggingFace Transformer Encoder + Multi-label decoder model
+    xfrmr_hf_enc_base_cmd = f"python seq2seq_trainer_activity_recg.py --gpus {args.gpus} --batch_size {args.batch_size} --max_epochs {args.max_epochs} --N_valid_size 0.2 --exclude_eos 1 --use_pred_eos 0 --use_pla 0 --use_transformer 1 --transformer_enc_only 1 --use_huggingface 1 --use_base_model 1 --use_max_seq_len 0 --same_vocab_in_out 0 --num_layers 1 --num_heads 8"
+
+    base_cmds = [nopla_base_cmd, pla_base_cmd, bm_base_cmd, xfrmr_base_cmd, xfrmr_enc_base_cmd, xfrmr_hf_enc_base_cmd]
     base_cmds = [base_cmds[-1]]
 
     training_files = glob.glob(os.path.join(args.data_dir, "ar-training-*"))
@@ -64,8 +67,10 @@ if __name__ == "__main__":
             # Add model independent run args here
             addon_str = " --debug" if args.debug else ""
             addon_str += " --train_data_path " + file
+            use_small_bs = Path(file).stem.split('_')[-1] == '10'
             for i in range(len(model_names)):
                 # Add model dependent run args here
+                base_cmd = base_cmds[i].replace('batch_size 512', 'batch_size 64') if use_small_bs else base_cmds[i]
                 logdir = Path(args.base_folder, model_names[i], exp_name)
                 model_addon_str = " --log_dir " + str(logdir)
                 if args.resume_checkpoint:
@@ -75,7 +80,7 @@ if __name__ == "__main__":
                     assert ckpt.endswith('.ckpt'), "Not a checkpoint file"
                     assert 'epoch=99' in ckpt, "ckpt not trained till epoch 100" # hard coded for now, check!
                     model_addon_str += " --resume_checkpoint " + ckpt
-                commands_to_run.append(base_cmds[i] + addon_str + model_addon_str)
+                commands_to_run.append(base_cmd + addon_str + model_addon_str)
 
     print(f"Total number of commands to run: {len(commands_to_run)}")
 
