@@ -21,13 +21,19 @@ if __name__ == "__main__":
     parser.add_argument("--base_folder", type=str, default="train", help="path to the root training folder where pla no_pla and bm train results are stored")
     parser.add_argument("--ckpt_to_use", type=str, default="best", help="best or last checkpoint to use")
     parser.add_argument("--last_epoch", type=int, default=100, help="Used for assertion - to make sure training ran this many epochs")
+    parser.add_argument("--last_epoch1", type=int, default=92, help="Ditto except relaxes assertion to another number")
     parser.add_argument("--write_results", type=int, default=1, help="Whether to write results to excel file.")
     # parser.add_argument("--debug", action='store_true', help='adds --debug flag to runs')
     args = parser.parse_args()
 
     exp_name = os.path.basename(args.data_dir)
-    model_names = ['no_pla', 'pla', 'base_model']
-    legend_model_names = ['Order-Aware', 'Order-Agnostic', 'Multi-label']
+    model_names = ['no_pla', 'pla', 'base_model', 'transformer', 'transformer_enc', 'transformer_hf_enc']
+    legend_model_names = ['Order-Aware', 'Order-Agnostic', 'Multi-label', 'Transformer', 'TF-MLabel', 'HFTF-MLabel'] # HuggingFace TimeSeriesTransformerModel
+    # For HFTF, I stopped some runs at epoch 91, so test did not finish. Hence, so need to comment out test values
+    # or exclude the last entry of both model and legend names list above, so no need to comment out anything
+    model_names = model_names[:-1]
+    legend_model_names = legend_model_names[:-1]
+
     noise_levels = [0, 0.2, 0.4, 0.6, 0.8]
     data_sizes = [10, 50, 250, 1250, 6250, 31250]
 
@@ -45,17 +51,20 @@ if __name__ == "__main__":
     metrics = ['train_loss_epoch', 'train_sequence_acc_epoch',
                'train_precision_acc_epoch', 'train_recall_acc_epoch', 'train_f1_acc_epoch',
                'test_loss', 'test_sequence_acc',
-               'test_precision_acc', 'test_recall_acc', 'test_f1_acc']
+               'test_precision_acc', 'test_recall_acc', 'test_f1_acc'
+               ]
 
     # to get data from train csv files
     usecols = metrics + ['epoch',
                'train_precision_acc_err_epoch', 'train_recall_acc_err_epoch', 'train_f1_acc_err_epoch',
-               'test_precision_acc_err', 'test_recall_acc_err', 'test_f1_acc_err']
+               'test_precision_acc_err', 'test_recall_acc_err', 'test_f1_acc_err'
+                         ]
 
     metrics_desc = ['Train Loss', 'Train Accuracy (Sequence or Label)',
                     'Train Precision', 'Train Recall', 'Train F1 Score',
                     'Test Loss', 'Test Accuracy (Sequence or Label)',
-                    'Test Precision', 'Test Recall', 'Test F1 Score']
+                    'Test Precision', 'Test Recall', 'Test F1 Score'
+                    ]
 
     # can be deleted once we rename err columns such that err is appened to existing name
     err_dict = {'train_precision_acc_epoch': 'train_precision_acc_err_epoch',
@@ -80,10 +89,11 @@ if __name__ == "__main__":
                 df = pd.read_csv(csv_file, usecols=usecols)
                 for key, value in usecols_dict.items():
                     indx = -3 if 'train' in key else -2 if args.ckpt_to_use == 'best' else -1
+                    last_epoch = df['epoch'].iloc[indx]
                     if 'train' in key:
-                        assert df['epoch'].iloc[indx] == args.last_epoch - 1 # make sure training ran till this point
+                        assert (last_epoch == args.last_epoch - 1) or (last_epoch == args.last_epoch1 -1)  # make sure training ran till this point
                     else:
-                        assert df['epoch'].iloc[indx] == args.last_epoch
+                        assert (last_epoch == args.last_epoch) or (last_epoch == args.last_epoch1 -1)
                     value[i][j][k] = df[key].iloc[indx]
 
 
